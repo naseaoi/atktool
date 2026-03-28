@@ -1,0 +1,51 @@
+{
+  "name": "atktool",
+  "version": "1.0.0",
+  "description": "ATK 鼠标电量悬浮窗原型",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:verbose": "electron . --verbose",
+    "build:win": "electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "atk.overlay.prototype",
+    "productName": "ATK Battery",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "README.md"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ATK Battery"
+    }
+  },
+  "keywords": [],
+  "author": "",
+  "devDependencies": {
+    "electron": "^41.1.0",
+    "electron-builder": "^26.8.1"
+  },
+  "license": "ISC",
+  "type": "commonjs"
+}

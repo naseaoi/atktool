@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ATK 电量悬浮窗</title>
+    <link rel="stylesheet" href="./overlay.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <div class="panel__glow"></div>
+      <section id="panelShell" class="panel__shell">
+        <div class="compact-orbit" aria-hidden="true"></div>
+        <header class="panel__header">
+          <div>
+            <p class="eyebrow">ATK BATTERY</p>
+            <h1 id="deviceName">等待连接</h1>
+          </div>
+          <div class="panel__actions no-drag">
+            <button id="pinButton" class="icon-button" type="button" aria-label="切换置顶" title="切换置顶">
+              <svg data-mode="fill" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 10V8a4 4 0 1 1 8 0v2h1a2 2 0 0 1 2 2v6.5a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V12a2 2 0 0 1 2-2h1zm2 0h4V8a2 2 0 1 0-4 0v2zm2 3a1.75 1.75 0 0 1 1 3.186V18h-2v-1.814A1.75 1.75 0 0 1 12 13z" />
+              </svg>
+              <span class="sr-only">切换置顶</span>
+            </button>
+            <button id="switchButton" class="icon-button" type="button" aria-label="切换为简略版" title="切换为简略版">
+              <svg
+                data-mode="stroke"
+                xmlns="http://www.w3.org/2000/svg"
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+                <path d="M5 9l4 0l0 -4" />
+                <path d="M3 3l6 6" />
+                <path d="M5 15l4 0l0 4" />
+                <path d="M3 21l6 -6" />
+                <path d="M19 9l-4 0l0 -4" />
+                <path d="M15 9l6 -6" />
+                <path d="M19 15l-4 0l0 4" />
+                <path d="M15 15l6 6" />
+              </svg>
+              <span class="sr-only">切换悬浮窗形态</span>
+            </button>
+          </div>
+        </header>
+
+        <section class="hero">
+          <div class="hero__copy">
+            <p class="hero__label">当前电量</p>
+            <div id="batteryText" class="hero__value">--</div>
+          </div>
+          <div class="battery-visual" aria-hidden="true">
+            <div class="battery-visual__case">
+              <div class="battery-visual__cap"></div>
+              <div class="battery-visual__track"></div>
+              <div class="battery-visual__fill"></div>
+              <div class="battery-visual__gloss"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="meta-grid">
+          <article class="meta-card">
+            <span class="meta-card__label">连接状态</span>
+            <strong id="statusText">加载中</strong>
+          </article>
+          <article class="meta-card">
+            <span class="meta-card__label">最近更新</span>
+            <strong id="updatedAt">--</strong>
+          </article>
+        </section>
+
+        <p id="messageText" class="message">正在准备页面...</p>
+
+        <footer class="panel__footer no-drag">
+          <button id="connectButton" class="primary-button">设备管理</button>
+          <button id="refreshButton" class="secondary-button">刷新</button>
+        </footer>
+      </section>
+    </main>
+
+    <script src="./overlay.js"></script>
+  </body>
+</html>

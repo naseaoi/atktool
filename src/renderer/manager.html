@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ATK 设备管理</title>
+    <link rel="stylesheet" href="./manager.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero-card">
+        <p class="eyebrow">STABLE HID LINK</p>
+        <div class="hero-row">
+          <div>
+            <h1>ATK 电量直连管理</h1>
+            <p id="heroMessage" class="hero-message">正在准备 WebHID 直连器...</p>
+          </div>
+          <div class="hero-badge">
+            <span>当前电量</span>
+            <strong id="heroBattery">--</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="content-grid">
+        <article class="panel-card">
+          <div class="panel-card__header">
+            <h2>设备状态</h2>
+            <span id="statusChip" class="status-chip">加载中</span>
+          </div>
+          <dl class="detail-grid">
+            <div>
+              <dt>设备名</dt>
+              <dd id="deviceName">等待连接</dd>
+            </div>
+            <div>
+              <dt>采集模式</dt>
+              <dd id="modeText">直连优先</dd>
+            </div>
+            <div>
+              <dt>协议</dt>
+              <dd id="protocolText">--</dd>
+            </div>
+            <div>
+              <dt>最近更新</dt>
+              <dd id="updatedAt">--</dd>
+            </div>
+            <div>
+              <dt>已授权设备数</dt>
+              <dd id="grantedCount">0</dd>
+            </div>
+            <div>
+              <dt>充电状态</dt>
+              <dd id="chargingText">--</dd>
+            </div>
+          </dl>
+        </article>
+
+        <article class="panel-card panel-card--actions">
+          <div class="panel-card__header">
+            <h2>操作</h2>
+          </div>
+          <div class="action-list">
+            <button id="authorizeButton" class="primary-button">选择并绑定设备</button>
+            <button id="refreshButton" class="secondary-button">刷新当前设备</button>
+            <button id="unbindButton" class="secondary-button danger-button">解绑当前设备</button>
+            <button id="fallbackButton" class="secondary-button">同步官网电量</button>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel-card settings-card">
+        <div class="settings-block settings-block--standalone">
+          <div class="settings-block__header">
+            <h2>偏好设置</h2>
+            <span>即时生效</span>
+          </div>
+
+          <div class="settings-grid">
+            <button id="startupToggle" class="setting-toggle" type="button" aria-pressed="false">
+              <span class="setting-toggle__copy">
+                <strong>开机启动</strong>
+                <small id="startupHint">登录 Windows 后自动启动悬浮窗。</small>
+              </span>
+              <span class="setting-toggle__meta">
+                <span id="startupValue" class="setting-toggle__value">已关闭</span>
+                <span class="setting-switch" aria-hidden="true">
+                  <span class="setting-switch__thumb"></span>
+                </span>
+              </span>
+            </button>
+
+            <button id="overlayModeToggle" class="setting-toggle" type="button" aria-pressed="false">
+              <span class="setting-toggle__copy">
+                <strong>简略悬浮窗</strong>
+                <small id="overlayModeHint">切换为圆形简略版，只保留电量数字。</small>
+              </span>
+              <span class="setting-toggle__meta">
+                <span id="overlayModeValue" class="setting-toggle__value">完整版</span>
+                <span class="setting-switch" aria-hidden="true">
+                  <span class="setting-switch__thumb"></span>
+                </span>
+              </span>
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="hidPickerBackdrop" class="dialog-backdrop" hidden>
+      <section class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="hidPickerTitle">
+        <div class="dialog-card__header">
+          <div>
+            <h2 id="hidPickerTitle">选择要绑定的 HID 设备</h2>
+            <p id="hidPickerHint" class="dialog-copy">请从下方列表里选择你的鼠标或接收器，再继续绑定。</p>
+          </div>
+        </div>
+
+        <div id="hidPickerEmpty" class="dialog-empty" hidden>
+          当前没有可选 HID 设备。请确认鼠标使用 2.4G 接收器或有线连接，保持这个窗口打开后再插拔试试。
+        </div>
+
+        <div id="hidPickerList" class="device-picker-list"></div>
+
+        <div class="dialog-actions">
+          <button id="hidPickerCancelButton" class="secondary-button" type="button">取消</button>
+          <button id="hidPickerConfirmButton" class="primary-button" type="button">绑定所选设备</button>
+        </div>
+      </section>
+    </div>
+
+    <script src="./manager.js"></script>
+  </body>
+</html>

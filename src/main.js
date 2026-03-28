@@ -1,0 +1,1551 @@
+const path = require('node:path');
+const fs = require('node:fs');
+const zlib = require('node:zlib');
+const {
+  app,
+  BrowserWindow,
+  Menu,
+  Tray,
+  nativeImage,
+  ipcMain,
+  session,
+} = require('electron');
+
+const { readSettings, writeSettings } = require('./lib/store');
+
+const HUB_URL = 'https://hub.atk.pro/';
+const HUB_ORIGIN = new URL(HUB_URL).origin;
+const OVERLAY_VARIANTS = {
+  full: {
+    width: 404,
+    height: 392,
+  },
+  compact: {
+    width: 80,
+    height: 80,
+  },
+};
+const MANAGER_MIN_HEIGHT = 560;
+const TRAY_ICON_VERSION = 'v3';
+const TRAY_ICON_SIZE = 64;
+const TRAY_DIGIT_SEGMENTS = {
+  0: ['a', 'b', 'c', 'd', 'e', 'f'],
+  1: ['b', 'c'],
+  2: ['a', 'b', 'd', 'e', 'g'],
+  3: ['a', 'b', 'c', 'd', 'g'],
+  4: ['b', 'c', 'f', 'g'],
+  5: ['a', 'c', 'd', 'f', 'g'],
+  6: ['a', 'c', 'd', 'e', 'f', 'g'],
+  7: ['a', 'b', 'c'],
+  8: ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
+  9: ['a', 'b', 'c', 'd', 'f', 'g'],
+  '-': ['g'],
+};
+const GENERIC_DEVICE_NAME_PATTERN = /wireless mouse|mouse|dongle|receiver|nano|hid|bluetooth|keyboard/i;
+
+let overlayWindow = null;
+let managerWindow = null;
+let fallbackHubWindow = null;
+let tray = null;
+let isQuitting = false;
+let activeOverlaySource = 'manager';
+let hidManualSelectionRequested = false;
+let pendingHidSelection = null;
+let settings = readSettings();
+let overlayState = {
+  status: 'loading',
+  message: '正在启动悬浮窗...',
+  batteryPercent: null,
+  batteryText: '--',
+  deviceName: '',
+  charging: false,
+  needsUserAction: true,
+  sampledAt: null,
+  protocolName: '',
+  mode: 'stable',
+  alwaysOnTop: settings.alwaysOnTop,
+  overlayVariant: settings.overlayVariant === 'compact' ? 'compact' : 'full',
+};
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
+
+function createCrcTable() {
+  const table = new Uint32Array(256);
+
+  for (let index = 0; index < 256; index += 1) {
+    let value = index;
+
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    }
+
+    table[index] = value >>> 0;
+  }
+
+  return table;
+}
+
+const PNG_CRC_TABLE = createCrcTable();
+
+function crc32(buffer) {
+  let value = 0xffffffff;
+
+  for (const byte of buffer) {
+    value = PNG_CRC_TABLE[(value ^ byte) & 0xff] ^ (value >>> 8);
+  }
+
+  return (value ^ 0xffffffff) >>> 0;
+}
+
+function createPngChunk(type, data) {
+  const typeBuffer = Buffer.from(type, 'ascii');
+  const lengthBuffer = Buffer.alloc(4);
+  const crcBuffer = Buffer.alloc(4);
+  const payload = Buffer.concat([typeBuffer, data]);
+
+  lengthBuffer.writeUInt32BE(data.length, 0);
+  crcBuffer.writeUInt32BE(crc32(payload), 0);
+
+  return Buffer.concat([lengthBuffer, payload, crcBuffer]);
+}
+
+function encodeRgbaToPng(width, height, pixels) {
+  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const header = Buffer.alloc(13);
+  const stride = width * 4;
+  const raw = Buffer.alloc((stride + 1) * height);
+
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 6;
+  header[10] = 0;
+  header[11] = 0;
+  header[12] = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * (stride + 1);
+    raw[rowOffset] = 0;
+    pixels.copy(raw, rowOffset + 1, y * stride, y * stride + stride);
+  }
+
+  return Buffer.concat([
+    signature,
+    createPngChunk('IHDR', header),
+    createPngChunk('IDAT', zlib.deflateSync(raw)),
+    createPngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function createRgbaCanvas(width, height) {
+  return Buffer.alloc(width * height * 4, 0);
+}
+
+function blendPixel(pixels, width, x, y, color, alphaScale = 1) {
+  if (x < 0 || y < 0 || x >= width || y >= TRAY_ICON_SIZE) {
+    return;
+  }
+
+  const index = (y * width + x) * 4;
+  const sourceAlpha = (color[3] / 255) * alphaScale;
+  const targetAlpha = pixels[index + 3] / 255;
+  const outputAlpha = sourceAlpha + targetAlpha * (1 - sourceAlpha);
+
+  if (outputAlpha <= 0) {
+    return;
+  }
+
+  pixels[index] = Math.round((color[0] * sourceAlpha + pixels[index] * targetAlpha * (1 - sourceAlpha)) / outputAlpha);
+  pixels[index + 1] = Math.round((color[1] * sourceAlpha + pixels[index + 1] * targetAlpha * (1 - sourceAlpha)) / outputAlpha);
+  pixels[index + 2] = Math.round((color[2] * sourceAlpha + pixels[index + 2] * targetAlpha * (1 - sourceAlpha)) / outputAlpha);
+  pixels[index + 3] = Math.round(outputAlpha * 255);
+}
+
+function isPointInRoundedRect(pointX, pointY, rectX, rectY, rectWidth, rectHeight, radius) {
+  const limitX = Math.max(rectX + radius, Math.min(pointX, rectX + rectWidth - radius));
+  const limitY = Math.max(rectY + radius, Math.min(pointY, rectY + rectHeight - radius));
+  const distanceX = pointX - limitX;
+  const distanceY = pointY - limitY;
+
+  return distanceX * distanceX + distanceY * distanceY <= radius * radius;
+}
+
+function drawRoundedRect(pixels, width, height, x, y, rectWidth, rectHeight, radius, color) {
+  const samplePoints = [
+    [0.25, 0.25],
+    [0.75, 0.25],
+    [0.25, 0.75],
+    [0.75, 0.75],
+  ];
+  const startX = Math.max(0, Math.floor(x));
+  const endX = Math.min(width - 1, Math.ceil(x + rectWidth));
+  const startY = Math.max(0, Math.floor(y));
+  const endY = Math.min(height - 1, Math.ceil(y + rectHeight));
+
+  for (let pixelY = startY; pixelY <= endY; pixelY += 1) {
+    for (let pixelX = startX; pixelX <= endX; pixelX += 1) {
+      let coverage = 0;
+
+      for (const [offsetX, offsetY] of samplePoints) {
+        if (isPointInRoundedRect(pixelX + offsetX, pixelY + offsetY, x, y, rectWidth, rectHeight, radius)) {
+          coverage += 1;
+        }
+      }
+
+      if (coverage > 0) {
+        blendPixel(pixels, width, pixelX, pixelY, color, coverage / samplePoints.length);
+      }
+    }
+  }
+}
+
+function drawTrayDigit(pixels, width, height, digit, offsetX, offsetY, scale, color) {
+  const thickness = 2 * scale;
+  const length = 7 * scale;
+  const halfLength = 5.5 * scale;
+  const rounded = 0.85 * scale;
+  const segments = {
+    a: { x: offsetX + 2 * scale, y: offsetY, width: length, height: thickness },
+    d: { x: offsetX + 2 * scale, y: offsetY + 14 * scale, width: length, height: thickness },
+    g: { x: offsetX + 2 * scale, y: offsetY + 7 * scale, width: length, height: thickness },
+    f: { x: offsetX, y: offsetY + 1.5 * scale, width: thickness, height: halfLength },
+    e: { x: offsetX, y: offsetY + 8 * scale, width: thickness, height: halfLength },
+    b: { x: offsetX + 9 * scale, y: offsetY + 1.5 * scale, width: thickness, height: halfLength },
+    c: { x: offsetX + 9 * scale, y: offsetY + 8 * scale, width: thickness, height: halfLength },
+  };
+
+  for (const segmentName of TRAY_DIGIT_SEGMENTS[digit] || []) {
+    const segment = segments[segmentName];
+    drawRoundedRect(pixels, width, height, segment.x, segment.y, segment.width, segment.height, rounded, color);
+  }
+}
+
+function renderTrayIconBuffer(percent = null) {
+  const pixels = createRgbaCanvas(TRAY_ICON_SIZE, TRAY_ICON_SIZE);
+  const text = Number.isFinite(percent) ? String(Math.max(0, Math.min(100, Math.round(percent)))) : '--';
+  const scale = text.length >= 3 ? 1.46 : text.length === 2 ? 1.9 : 2.34;
+  const digitWidth = 11 * scale;
+  const gap = text.length >= 3 ? 2.4 : 4;
+  const totalWidth = digitWidth * text.length + gap * Math.max(0, text.length - 1);
+  const startX = (TRAY_ICON_SIZE - totalWidth) / 2;
+  const startY = text.length >= 3 ? 18 : 15;
+
+  // 托盘图标直接光栅化成 PNG，避免 Win11/Electron 对 SVG 托盘图的透明兼容问题。
+  drawRoundedRect(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, 2, 2, 60, 60, 17, [35, 73, 84, 255]);
+  drawRoundedRect(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, 3.5, 3.5, 57, 57, 15.5, [13, 32, 40, 255]);
+  drawRoundedRect(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, 5, 5, 54, 54, 14, [21, 55, 64, 255]);
+  drawRoundedRect(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, 8, 8, 48, 48, 12, [255, 255, 255, 12]);
+
+  text.split('').forEach((digit, index) => {
+    const offsetX = startX + index * (digitWidth + gap);
+    drawTrayDigit(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, digit, offsetX + 1.2, startY + 1.2, scale, [8, 18, 25, 78]);
+    drawTrayDigit(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, digit, offsetX, startY, scale, [244, 251, 250, 255]);
+  });
+
+  return encodeRgbaToPng(TRAY_ICON_SIZE, TRAY_ICON_SIZE, pixels);
+}
+
+function createTrayIcon(percent = null) {
+  return nativeImage.createFromBuffer(renderTrayIconBuffer(percent));
+}
+
+function setActiveOverlaySource(source) {
+  if (source !== 'hub' && fallbackHubWindow && !fallbackHubWindow.isDestroyed()) {
+    fallbackHubWindow.destroy();
+    fallbackHubWindow = null;
+  }
+
+  activeOverlaySource = source === 'hub' ? 'hub' : 'manager';
+}
+
+async function activateStableOverlaySource() {
+  setActiveOverlaySource('manager');
+  await new Promise((resolve) => {
+    setTimeout(resolve, 220);
+  });
+
+  return true;
+}
+
+function normalizeOverlayVariant(value) {
+  return value === 'compact' ? 'compact' : 'full';
+}
+
+function getOverlayVariant() {
+  return normalizeOverlayVariant(settings.overlayVariant);
+}
+
+function getOverlayMetrics(variant = getOverlayVariant()) {
+  return OVERLAY_VARIANTS[normalizeOverlayVariant(variant)] || OVERLAY_VARIANTS.full;
+}
+
+function getOverlayBoundsKey(variant = getOverlayVariant()) {
+  return normalizeOverlayVariant(variant) === 'compact' ? 'compactOverlayBounds' : 'overlayBounds';
+}
+
+function getStoredOverlayBounds(variant = getOverlayVariant()) {
+  return settings[getOverlayBoundsKey(variant)] || null;
+}
+
+function saveSettings(patch) {
+  settings = {
+    ...settings,
+    ...patch,
+  };
+  writeSettings(settings);
+}
+
+function normalizeDeviceName(name) {
+  return typeof name === 'string' ? name.trim() : '';
+}
+
+function getDeviceProductName(device) {
+  return normalizeDeviceName(device?.productName || device?.name);
+}
+
+function visitCollections(collections, visitor) {
+  for (const collection of Array.isArray(collections) ? collections : []) {
+    visitor(collection);
+    visitCollections(collection.children, visitor);
+  }
+}
+
+function buildCollectionSignature(device) {
+  const signatures = [];
+
+  visitCollections(device?.collections, (collection) => {
+    const inputReports = Array.isArray(collection.inputReports)
+      ? collection.inputReports.map((report) => report.reportId).sort((left, right) => left - right).join(',')
+      : '';
+    const outputReports = Array.isArray(collection.outputReports)
+      ? collection.outputReports.map((report) => report.reportId).sort((left, right) => left - right).join(',')
+      : '';
+    const featureReports = Array.isArray(collection.featureReports)
+      ? collection.featureReports.map((report) => report.reportId).sort((left, right) => left - right).join(',')
+      : '';
+
+    signatures.push([
+      collection.usagePage ?? '',
+      collection.usage ?? '',
+      inputReports,
+      outputReports,
+      featureReports,
+    ].join('/'));
+  });
+
+  return signatures.sort().join('|');
+}
+
+function normalizeDeviceBinding(device) {
+  if (!device || !Number.isFinite(device.vendorId) || !Number.isFinite(device.productId)) {
+    return null;
+  }
+
+  return {
+    vendorId: device.vendorId,
+    productId: device.productId,
+    productName: getDeviceProductName(device),
+    collectionSignature: normalizeDeviceName(device.collectionSignature) || buildCollectionSignature(device),
+  };
+}
+
+function getDeviceBindingKey(device) {
+  const normalized = normalizeDeviceBinding(device);
+
+  if (!normalized) {
+    return '';
+  }
+
+  return [normalized.vendorId, normalized.productId, normalized.productName, normalized.collectionSignature].join(':');
+}
+
+function getLooseDeviceBindingKey(device) {
+  const normalized = normalizeDeviceBinding(device);
+
+  if (!normalized) {
+    return '';
+  }
+
+  return [normalized.vendorId, normalized.productId, normalized.productName].join(':');
+}
+
+function getDeviceBindingMatchLevel(left, right) {
+  const exactLeft = getDeviceBindingKey(left);
+  const exactRight = getDeviceBindingKey(right);
+
+  if (exactLeft && exactLeft === exactRight) {
+    return 2;
+  }
+
+  const looseLeft = getLooseDeviceBindingKey(left);
+  const looseRight = getLooseDeviceBindingKey(right);
+
+  if (looseLeft && looseLeft === looseRight) {
+    return 1;
+  }
+
+  return 0;
+}
+
+function hasRememberedDeviceBinding() {
+  return Boolean(normalizeDeviceBinding(settings.preferredHidDevice));
+}
+
+function isGenericDeviceName(name) {
+  const normalized = normalizeDeviceName(name);
+  if (!normalized) {
+    return true;
+  }
+
+  if (/ATK|VXE/i.test(normalized)) {
+    return false;
+  }
+
+  return GENERIC_DEVICE_NAME_PATTERN.test(normalized);
+}
+
+function getBoundDisplayDeviceName(device = settings.preferredHidDevice) {
+  const savedName = normalizeDeviceName(settings.displayDeviceName);
+  const binding = settings.displayDeviceNameBinding || settings.preferredHidDevice;
+
+  if (!savedName || isGenericDeviceName(savedName)) {
+    return '';
+  }
+
+  // 兼容旧版本只记录宽松绑定的情况；若当前还是同一类 HID 接口，则继续复用已识别的型号名。
+  if (!getDeviceBindingMatchLevel(binding, device)) {
+    return '';
+  }
+
+  return savedName;
+}
+
+function resolveOverlayDeviceName(name) {
+  const normalized = normalizeDeviceName(name);
+  const savedName = getBoundDisplayDeviceName();
+
+  if (normalized && !isGenericDeviceName(normalized)) {
+    return normalized;
+  }
+
+  if (savedName && !isGenericDeviceName(savedName)) {
+    return savedName;
+  }
+
+  if (normalized) {
+    return 'ATK 设备';
+  }
+
+  return savedName;
+}
+
+function rememberDisplayDeviceName(name, device = settings.preferredHidDevice) {
+  const normalized = normalizeDeviceName(name);
+  const binding = normalizeDeviceBinding(device);
+  const currentBindingKey = getDeviceBindingKey(settings.displayDeviceNameBinding);
+  const nextBindingKey = getDeviceBindingKey(binding);
+
+  if (!normalized || isGenericDeviceName(normalized) || !binding) {
+    return false;
+  }
+
+  if (normalized === settings.displayDeviceName && currentBindingKey === nextBindingKey) {
+    return false;
+  }
+
+  saveSettings({
+    displayDeviceName: normalized,
+    displayDeviceNameBinding: binding,
+  });
+
+  return true;
+}
+
+function getOverlayMessage(nextState) {
+  if (nextState.mode === 'fallback') {
+    if (nextState.status === 'connected') {
+      return '同步官网电量已接管电量读取。';
+    }
+
+    if (nextState.status === 'waiting') {
+      return '同步官网电量页已打开，等待设备信息出现。';
+    }
+
+    return '同步官网电量页可继续完成连接。';
+  }
+
+  if (nextState.status === 'connected') {
+    return nextState.batteryPercent === null ? '本地直连已建立。' : '本地直连工作中。';
+  }
+
+  if (nextState.status === 'unsupported') {
+    return nextState.batteryPercent === null ? '直连适配中，可打开设备管理继续处理。' : '本地直连工作中。';
+  }
+
+  if (nextState.status === 'waiting') {
+    return hasRememberedDeviceBinding()
+      ? '当前绑定设备待连接，可在设备管理里刷新当前设备。'
+      : '请在设备管理里选择并绑定设备。';
+  }
+
+  if (nextState.status === 'error') {
+    return '读取异常，请打开设备管理查看详情。';
+  }
+
+  return nextState.message || '正在准备 HID 直连采集...';
+}
+
+function getStatusLabel(status) {
+  switch (status) {
+    case 'connected':
+      return '已连接';
+    case 'unsupported':
+      return '待适配';
+    case 'waiting':
+      return hasRememberedDeviceBinding() ? '待连接' : '待绑定';
+    case 'error':
+      return '异常';
+    default:
+      return '加载中';
+  }
+}
+
+function buildManagerPreferences() {
+  return {
+    preferredHidDevice: settings.preferredHidDevice || null,
+    displayDeviceName: getBoundDisplayDeviceName(),
+    alwaysOnTop: settings.alwaysOnTop,
+    openAtLogin: Boolean(settings.openAtLogin),
+    overlayVariant: getOverlayVariant(),
+  };
+}
+
+function fitManagerWindowHeight(contentHeight) {
+  if (!managerWindow || managerWindow.isDestroyed() || !Number.isFinite(contentHeight)) {
+    return;
+  }
+
+  if (managerWindow.isMaximized() || managerWindow.isFullScreen()) {
+    return;
+  }
+
+  const targetHeight = Math.max(MANAGER_MIN_HEIGHT, Math.ceil(contentHeight));
+  const currentBounds = managerWindow.getContentBounds();
+
+  if (Math.abs(currentBounds.height - targetHeight) <= 2) {
+    return;
+  }
+
+  managerWindow.setContentSize(currentBounds.width, targetHeight);
+}
+
+function fitOverlayWindowHeight(contentHeight) {
+  if (!overlayWindow || overlayWindow.isDestroyed() || !Number.isFinite(contentHeight)) {
+    return;
+  }
+
+  if (overlayWindow.isMaximized() || overlayWindow.isFullScreen() || getOverlayVariant() !== 'full') {
+    return;
+  }
+
+  const metrics = getOverlayMetrics('full');
+  const targetHeight = Math.max(340, Math.ceil(contentHeight));
+  const currentBounds = overlayWindow.getContentBounds();
+
+  if (Math.abs(currentBounds.height - targetHeight) <= 2) {
+    return;
+  }
+
+  // 完整版高度由渲染层回传的真实内容高度驱动，避免底部操作区被压缩。
+  overlayWindow.setMinimumSize(metrics.width, targetHeight);
+  overlayWindow.setMaximumSize(metrics.width, targetHeight);
+  overlayWindow.setContentSize(metrics.width, targetHeight);
+}
+
+function updateWindowTaskbarIcons() {
+  const icon = createTrayIcon(overlayState.batteryPercent);
+  const description = overlayState.batteryPercent !== null ? `当前电量 ${overlayState.batteryPercent}` : '暂无电量';
+
+  if (managerWindow && !managerWindow.isDestroyed()) {
+    managerWindow.setOverlayIcon(icon, description);
+  }
+
+  if (fallbackHubWindow && !fallbackHubWindow.isDestroyed()) {
+    fallbackHubWindow.setOverlayIcon(icon, description);
+  }
+}
+
+function getTrayIconDirectory() {
+  return path.join(app.getPath('userData'), 'tray-icons');
+}
+
+function getTrayIconFilePath(percent = null) {
+  const text = Number.isFinite(percent) ? String(Math.max(0, Math.min(100, Math.round(percent)))) : 'unknown';
+  const filePath = path.join(getTrayIconDirectory(), `battery-${TRAY_ICON_VERSION}-${text}.png`);
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, renderTrayIconBuffer(percent));
+
+  return filePath;
+}
+
+function loadTrayIconFromFile(percent = null) {
+  const filePath = getTrayIconFilePath(percent);
+  return nativeImage.createFromBuffer(fs.readFileSync(filePath));
+}
+
+function notifyManagerPreferencesChanged() {
+  if (!managerWindow || managerWindow.isDestroyed()) {
+    return;
+  }
+
+  managerWindow.webContents.send('manager:preferences', buildManagerPreferences());
+}
+
+function notifyManagerOverlayStateChanged() {
+  if (!managerWindow || managerWindow.isDestroyed()) {
+    return;
+  }
+
+  // 管理页自己的本地直连状态由渲染层直接维护，只在官网同步接管时才需要主进程回推。
+  if (activeOverlaySource !== 'hub' || overlayState.mode !== 'fallback') {
+    return;
+  }
+
+  managerWindow.webContents.send('manager:overlay-state', overlayState);
+}
+
+function persistOverlayBounds(bounds, variant = getOverlayVariant()) {
+  if (!bounds) {
+    return;
+  }
+
+  void variant;
+
+  // 两种形态共用同一套锚点，保证移动完整版后切到简略版仍停在同一位置。
+  saveSettings({
+    overlayBounds: {
+      x: bounds.x,
+      y: bounds.y,
+    },
+    compactOverlayBounds: {
+      x: bounds.x,
+      y: bounds.y,
+    },
+  });
+}
+
+function getLoginItemArgs() {
+  return app.isPackaged ? [] : [app.getAppPath()];
+}
+
+function setOpenAtLogin(enabled) {
+  const nextValue = Boolean(enabled);
+  const args = getLoginItemArgs();
+
+  app.setLoginItemSettings({
+    openAtLogin: nextValue,
+    path: process.execPath,
+    args,
+  });
+
+  const loginItemState = app.getLoginItemSettings({
+    path: process.execPath,
+    args,
+  });
+
+  saveSettings({
+    openAtLogin: Boolean(loginItemState.openAtLogin),
+  });
+  notifyManagerPreferencesChanged();
+  updateTrayMenu();
+
+  return {
+    ...buildManagerPreferences(),
+  };
+}
+
+function setOverlayVariant(nextVariant) {
+  const overlayVariant = normalizeOverlayVariant(nextVariant);
+  const currentBounds = overlayWindow && !overlayWindow.isDestroyed() ? overlayWindow.getBounds() : null;
+  const storedBounds = getStoredOverlayBounds(overlayVariant);
+  const fallbackBounds = currentBounds
+    ? {
+        x: currentBounds.x,
+        y: currentBounds.y,
+      }
+    : null;
+  const nextBounds = storedBounds || fallbackBounds;
+  const patch = {
+    overlayVariant,
+  };
+
+  if (nextBounds && !storedBounds) {
+    patch[getOverlayBoundsKey(overlayVariant)] = nextBounds;
+  }
+
+  saveSettings(patch);
+
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    const metrics = getOverlayMetrics(overlayVariant);
+    overlayWindow.setMinimumSize(metrics.width, metrics.height);
+    overlayWindow.setMaximumSize(metrics.width, metrics.height);
+    overlayWindow.setSize(metrics.width, metrics.height);
+
+    if (nextBounds) {
+      overlayWindow.setPosition(nextBounds.x, nextBounds.y);
+    }
+  }
+
+  mergeOverlayState({
+    overlayVariant,
+  });
+  notifyManagerPreferencesChanged();
+
+  return {
+    ...buildManagerPreferences(),
+  };
+}
+
+async function applyOverlayVariant(nextVariant, options = {}) {
+  void options;
+  // 直接切换尺寸和布局，避免隐藏/重显带来的过渡动画。
+  return setOverlayVariant(nextVariant);
+}
+
+function mergeOverlayState(patch) {
+  // 主进程统一维护悬浮窗状态，避免托盘、管理页、同步官网电量页彼此漂移。
+  const nextDeviceName = resolveOverlayDeviceName(patch.deviceName ?? overlayState.deviceName);
+  const didUpdateDisplayDeviceName = rememberDisplayDeviceName(nextDeviceName);
+
+  overlayState = {
+    ...overlayState,
+    ...patch,
+    deviceName: nextDeviceName,
+    alwaysOnTop: settings.alwaysOnTop,
+    overlayVariant: getOverlayVariant(),
+  };
+  overlayState.message = getOverlayMessage(overlayState);
+
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('overlay:state-changed', overlayState);
+  }
+
+  notifyManagerOverlayStateChanged();
+
+  if (didUpdateDisplayDeviceName) {
+    notifyManagerPreferencesChanged();
+  }
+
+  updateWindowTaskbarIcons();
+  updateTrayMenu();
+}
+
+function getDeviceMatchScore(device) {
+  const preferred = settings.preferredHidDevice;
+  const productName = getDeviceProductName(device);
+  const collections = Array.isArray(device.collections) ? device.collections : [];
+  const hasMouseCollection = collections.some((collection) => collection.usage === 2);
+  const hasKeyboardCollection = collections.some((collection) => collection.usage === 6);
+  let score = 0;
+
+  if (/ATK|VXE/i.test(productName)) {
+    score += 30;
+  }
+
+  if (/mouse|鼠标|F1|X1|R1/i.test(productName)) {
+    score += 18;
+  }
+
+  if (hasMouseCollection) {
+    score += 18;
+  }
+
+  if (hasKeyboardCollection) {
+    score -= 12;
+  }
+
+  if (
+    preferred &&
+    preferred.vendorId === device.vendorId &&
+    preferred.productId === device.productId &&
+    preferred.productName === productName
+  ) {
+    score += 100;
+  }
+
+  return score;
+}
+
+function chooseHidDevice(deviceList) {
+  if (!Array.isArray(deviceList) || deviceList.length === 0) {
+    return null;
+  }
+
+  return [...deviceList]
+    .map((device) => ({ device, score: getDeviceMatchScore(device) }))
+    .sort((left, right) => right.score - left.score)[0]?.device || null;
+}
+
+function serializeHidChooserDevice(device) {
+  const binding = normalizeDeviceBinding(device);
+
+  if (!binding || !device?.deviceId) {
+    return null;
+  }
+
+  return {
+    deviceId: device.deviceId,
+    vendorId: binding.vendorId,
+    productId: binding.productId,
+    productName: binding.productName,
+    serialNumber: normalizeDeviceName(device.serialNumber),
+    guid: normalizeDeviceName(device.guid),
+    collections: Array.isArray(device.collections) ? device.collections : [],
+    collectionSignature: binding.collectionSignature,
+    score: getDeviceMatchScore(device),
+    matchLevel: getDeviceBindingMatchLevel(binding, settings.preferredHidDevice),
+  };
+}
+
+function buildHidChooserDeviceList(deviceMap) {
+  return Array.from(deviceMap.values())
+    .map((device) => serializeHidChooserDevice(device))
+    .filter(Boolean)
+    .sort((left, right) => {
+      if (right.matchLevel !== left.matchLevel) {
+        return right.matchLevel - left.matchLevel;
+      }
+
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      return left.productName.localeCompare(right.productName, 'zh-CN');
+    });
+}
+
+function notifyManagerHidSelection(payload) {
+  if (!managerWindow || managerWindow.isDestroyed()) {
+    return;
+  }
+
+  managerWindow.webContents.send('manager:hid-selection', payload);
+}
+
+function syncManagerHidSelectionState() {
+  if (!pendingHidSelection) {
+    notifyManagerHidSelection({ open: false, devices: [] });
+    return;
+  }
+
+  notifyManagerHidSelection({
+    open: true,
+    devices: buildHidChooserDeviceList(pendingHidSelection.deviceMap),
+  });
+}
+
+function clearPendingHidSelection(callbackDeviceId) {
+  if (!pendingHidSelection) {
+    return false;
+  }
+
+  const { callback, session: currentSession, addedListener, removedListener } = pendingHidSelection;
+  pendingHidSelection = null;
+  hidManualSelectionRequested = false;
+
+  if (currentSession && addedListener) {
+    currentSession.removeListener('hid-device-added', addedListener);
+  }
+
+  if (currentSession && removedListener) {
+    currentSession.removeListener('hid-device-removed', removedListener);
+  }
+
+  notifyManagerHidSelection({ open: false, devices: [] });
+
+  if (callbackDeviceId) {
+    callback(callbackDeviceId);
+  } else {
+    callback();
+  }
+
+  return true;
+}
+
+function cancelPendingHidSelection() {
+  if (!pendingHidSelection) {
+    return false;
+  }
+
+  return clearPendingHidSelection();
+}
+
+function updatePendingHidSelectionDevices() {
+  if (!pendingHidSelection) {
+    return;
+  }
+
+  syncManagerHidSelectionState();
+}
+
+function createOverlayWindow() {
+  const overlayVariant = getOverlayVariant();
+  const metrics = getOverlayMetrics(overlayVariant);
+
+  overlayWindow = new BrowserWindow({
+    width: metrics.width,
+    height: metrics.height,
+    minWidth: metrics.width,
+    minHeight: metrics.height,
+    maxWidth: metrics.width,
+    maxHeight: metrics.height,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    show: false,
+    skipTaskbar: true,
+    alwaysOnTop: settings.alwaysOnTop,
+    movable: true,
+    roundedCorners: true,
+    ...(getStoredOverlayBounds(overlayVariant)
+      ? { x: getStoredOverlayBounds(overlayVariant).x, y: getStoredOverlayBounds(overlayVariant).y }
+      : {}),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload', 'overlay-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  overlayWindow.setMenuBarVisibility(false);
+  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  overlayWindow.loadFile(path.join(__dirname, 'renderer', 'overlay.html'));
+
+  overlayWindow.once('ready-to-show', () => {
+    overlayWindow.show();
+    mergeOverlayState({ message: '正在准备 HID 直连采集...' });
+  });
+
+  overlayWindow.on('close', (event) => {
+    if (isQuitting) {
+      return;
+    }
+
+    event.preventDefault();
+    hideOverlayWindow();
+  });
+
+  overlayWindow.on('move', () => {
+    if (!overlayWindow || overlayWindow.isDestroyed()) {
+      return;
+    }
+
+    const bounds = overlayWindow.getBounds();
+    persistOverlayBounds(bounds);
+  });
+}
+
+function createManagerWindow() {
+  managerWindow = new BrowserWindow({
+    width: 880,
+    height: 720,
+    show: false,
+    useContentSize: true,
+    resizable: true,
+    autoHideMenuBar: true,
+    backgroundColor: '#081219',
+    title: 'ATK 设备管理',
+    minWidth: 820,
+    minHeight: MANAGER_MIN_HEIGHT,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload', 'manager-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
+
+  managerWindow.loadFile(path.join(__dirname, 'renderer', 'manager.html'));
+
+  managerWindow.webContents.on('did-finish-load', () => {
+    updateWindowTaskbarIcons();
+    managerWindow.webContents.send('manager:refresh');
+    syncManagerHidSelectionState();
+  });
+
+  managerWindow.on('close', (event) => {
+    if (isQuitting) {
+      return;
+    }
+
+    event.preventDefault();
+    cancelPendingHidSelection();
+    hideManagerWindow();
+  });
+}
+
+function createFallbackHubWindow() {
+  if (fallbackHubWindow && !fallbackHubWindow.isDestroyed()) {
+    return fallbackHubWindow;
+  }
+
+  fallbackHubWindow = new BrowserWindow({
+    width: 1280,
+    height: 860,
+    show: false,
+    resizable: true,
+    autoHideMenuBar: true,
+    backgroundColor: '#081219',
+    title: 'ATK HUB 同步官网电量',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload', 'hub-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
+
+  fallbackHubWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  fallbackHubWindow.loadURL(HUB_URL);
+  updateWindowTaskbarIcons();
+
+  fallbackHubWindow.webContents.on('did-start-loading', () => {
+    if (activeOverlaySource !== 'hub') {
+      return;
+    }
+
+    mergeOverlayState({
+      status: 'loading',
+      message: '同步官网电量页加载中...',
+      needsUserAction: true,
+      mode: 'fallback',
+    });
+  });
+
+  fallbackHubWindow.webContents.on('did-finish-load', () => {
+    if (activeOverlaySource !== 'hub') {
+      return;
+    }
+
+    mergeOverlayState({
+      status: 'waiting',
+      message: '同步官网电量页已打开，如直连失败可在这里手动连接。',
+      needsUserAction: true,
+      mode: 'fallback',
+    });
+  });
+
+  fallbackHubWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    if (activeOverlaySource !== 'hub') {
+      return;
+    }
+
+    mergeOverlayState({
+      status: 'error',
+      message: `同步官网电量页加载失败：${errorDescription} (${errorCode})`,
+      needsUserAction: true,
+      mode: 'fallback',
+    });
+  });
+
+  fallbackHubWindow.on('close', (event) => {
+    if (isQuitting) {
+      return;
+    }
+
+    event.preventDefault();
+    hideFallbackHubWindow();
+  });
+
+  return fallbackHubWindow;
+}
+
+function showOverlayWindow() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) {
+    return;
+  }
+
+  overlayWindow.show();
+  overlayWindow.focus();
+  updateTrayMenu();
+}
+
+function hideOverlayWindow() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) {
+    return;
+  }
+
+  overlayWindow.hide();
+  updateTrayMenu();
+}
+
+function toggleOverlayWindow() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) {
+    return;
+  }
+
+  if (overlayWindow.isVisible()) {
+    hideOverlayWindow();
+    return;
+  }
+
+  showOverlayWindow();
+}
+
+function showManagerWindow() {
+  if (!managerWindow || managerWindow.isDestroyed()) {
+    return;
+  }
+
+  managerWindow.show();
+  managerWindow.focus();
+  managerWindow.webContents.send('manager:refresh');
+  syncManagerHidSelectionState();
+  updateTrayMenu();
+}
+
+function hideManagerWindow() {
+  if (!managerWindow || managerWindow.isDestroyed()) {
+    return;
+  }
+
+  cancelPendingHidSelection();
+  managerWindow.hide();
+  updateTrayMenu();
+}
+
+function toggleManagerWindow() {
+  if (!managerWindow || managerWindow.isDestroyed()) {
+    return;
+  }
+
+  if (managerWindow.isVisible()) {
+    hideManagerWindow();
+    return;
+  }
+
+  showManagerWindow();
+}
+
+function refreshManagerWindow() {
+  if (!managerWindow || managerWindow.isDestroyed()) {
+    return;
+  }
+
+  setActiveOverlaySource('manager');
+  managerWindow.webContents.send('manager:refresh');
+  mergeOverlayState({
+    status: 'loading',
+    message: '正在刷新 HID 直连状态...',
+    needsUserAction: false,
+    mode: 'stable',
+  });
+}
+
+function showFallbackHubWindow() {
+  setActiveOverlaySource('hub');
+  const hubWindow = createFallbackHubWindow();
+  hubWindow.show();
+  hubWindow.focus();
+  updateTrayMenu();
+}
+
+function hideFallbackHubWindow() {
+  if (!fallbackHubWindow || fallbackHubWindow.isDestroyed()) {
+    return;
+  }
+
+  fallbackHubWindow.hide();
+  updateTrayMenu();
+}
+
+function toggleFallbackHubWindow() {
+  if (fallbackHubWindow && !fallbackHubWindow.isDestroyed() && fallbackHubWindow.isVisible()) {
+    hideFallbackHubWindow();
+    return;
+  }
+
+  showFallbackHubWindow();
+}
+
+function isWindowVisible(targetWindow) {
+  return Boolean(targetWindow && !targetWindow.isDestroyed() && targetWindow.isVisible());
+}
+
+function updateTrayMenu() {
+  if (!tray) {
+    return;
+  }
+
+  const overlayVisible = isWindowVisible(overlayWindow);
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: overlayVisible ? '隐藏悬浮窗' : '显示悬浮窗',
+      click: () => toggleOverlayWindow(),
+    },
+    {
+      label: '打开设备管理',
+      click: () => showManagerWindow(),
+    },
+    { type: 'separator' },
+    {
+      label: '刷新直连状态',
+      click: () => refreshManagerWindow(),
+    },
+    { type: 'separator' },
+    {
+      label: overlayState.status === 'connected' ? '连接状态：已连接' : `连接状态：${getStatusLabel(overlayState.status)}`,
+      enabled: false,
+    },
+    {
+      label: overlayState.batteryPercent !== null ? `当前电量：${overlayState.batteryPercent}%` : '当前电量：--',
+      enabled: false,
+    },
+    {
+      label: `设备：${overlayState.deviceName || '尚未识别到设备'}`,
+      enabled: false,
+    },
+    {
+      label: `协议：${overlayState.protocolName || '尚未建立稳定直连'}`,
+      enabled: false,
+    },
+    { type: 'separator' },
+    {
+      label: '保持置顶',
+      type: 'checkbox',
+      checked: Boolean(settings.alwaysOnTop),
+      click: () => togglePinState(),
+    },
+    {
+      label: '简略悬浮窗',
+      type: 'checkbox',
+      checked: getOverlayVariant() === 'compact',
+      click: (menuItem) => {
+        void applyOverlayVariant(menuItem.checked ? 'compact' : 'full', { hardSwitch: true });
+      },
+    },
+    {
+      label: '开机启动',
+      type: 'checkbox',
+      checked: Boolean(settings.openAtLogin),
+      click: (menuItem) => {
+        setOpenAtLogin(menuItem.checked);
+      },
+    },
+    { type: 'separator' },
+    {
+      label: '退出',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+
+  tray.setContextMenu(contextMenu);
+  tray.setImage(loadTrayIconFromFile(overlayState.batteryPercent));
+  tray.setToolTip(
+    overlayState.batteryPercent !== null
+      ? `ATK 电量 ${overlayState.batteryPercent}%`
+      : 'ATK 电量悬浮窗'
+  );
+}
+
+function createTray() {
+  tray = new Tray(loadTrayIconFromFile());
+  tray.on('click', () => toggleOverlayWindow());
+  updateTrayMenu();
+}
+
+function togglePinState() {
+  settings = {
+    ...settings,
+    alwaysOnTop: !settings.alwaysOnTop,
+  };
+  writeSettings(settings);
+
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.setAlwaysOnTop(settings.alwaysOnTop, 'screen-saver');
+  }
+
+  mergeOverlayState({});
+  return overlayState;
+}
+
+function rememberPreferredDevice(device) {
+  const normalized = normalizeDeviceBinding(device);
+
+  if (!normalized) {
+    return;
+  }
+
+  const currentKey = getDeviceBindingKey(settings.preferredHidDevice);
+  const nextKey = getDeviceBindingKey(normalized);
+  const currentDisplayBindingKey = getDeviceBindingKey(settings.displayDeviceNameBinding);
+  const patch = {
+    preferredHidDevice: normalized,
+  };
+
+  if (!isGenericDeviceName(normalized.productName)) {
+    patch.displayDeviceName = normalized.productName;
+    patch.displayDeviceNameBinding = normalized;
+  } else if (currentKey !== nextKey || currentDisplayBindingKey !== nextKey) {
+    patch.displayDeviceName = '';
+    patch.displayDeviceNameBinding = null;
+  }
+
+  saveSettings(patch);
+
+  if (currentKey !== nextKey || Object.prototype.hasOwnProperty.call(patch, 'displayDeviceName')) {
+    notifyManagerPreferencesChanged();
+  }
+}
+
+function clearPreferredDeviceBinding() {
+  saveSettings({
+    preferredHidDevice: null,
+    displayDeviceName: '',
+    displayDeviceNameBinding: null,
+  });
+  notifyManagerPreferencesChanged();
+
+  if (overlayState.mode !== 'fallback') {
+    mergeOverlayState({
+      status: 'waiting',
+      batteryPercent: null,
+      batteryText: '--',
+      deviceName: '',
+      charging: false,
+      needsUserAction: true,
+      sampledAt: new Date().toISOString(),
+      protocolName: '',
+      mode: 'stable',
+    });
+  }
+
+  return {
+    ...buildManagerPreferences(),
+  };
+}
+
+function isAllowedOrigin(origin) {
+  return typeof origin === 'string' && (origin === HUB_ORIGIN || origin.startsWith('file://'));
+}
+
+function registerDeviceHandlers() {
+  const currentSession = session.defaultSession;
+
+  currentSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
+    if (permission === 'hid') {
+      return isAllowedOrigin(requestingOrigin);
+    }
+
+    return false;
+  });
+
+  currentSession.setDevicePermissionHandler((details) => {
+    if (details.deviceType !== 'hid' || !isAllowedOrigin(details.origin)) {
+      return false;
+    }
+
+    if (hidManualSelectionRequested) {
+      return false;
+    }
+
+    // 仅允许当前已绑定的那只设备自动恢复权限；更换绑定时强制走系统选择框。
+    return getDeviceBindingMatchLevel(details.device, settings.preferredHidDevice) > 0;
+  });
+
+  currentSession.on('select-hid-device', (event, details, callback) => {
+    event.preventDefault();
+
+    const requestingUrl = details?.frame?.url || details?.frame?.origin || 'file://';
+
+    if (!isAllowedOrigin(requestingUrl)) {
+      callback();
+      return;
+    }
+
+    if (!hidManualSelectionRequested) {
+      callback();
+      return;
+    }
+
+    // Electron 不会替我们弹系统选择器，这里把 requestDevice 转成管理页内的自定义选择面板。
+    cancelPendingHidSelection();
+
+    const deviceMap = new Map();
+    for (const device of Array.isArray(details.deviceList) ? details.deviceList : []) {
+      if (device?.deviceId) {
+        deviceMap.set(device.deviceId, device);
+      }
+    }
+
+    if (deviceMap.size === 0) {
+      hidManualSelectionRequested = false;
+      notifyManagerHidSelection({ open: false, devices: [] });
+      callback();
+      return;
+    }
+
+    const addedListener = (_event, change) => {
+      const device = change?.device || change;
+
+      if (!pendingHidSelection || !device?.deviceId) {
+        return;
+      }
+
+      pendingHidSelection.deviceMap.set(device.deviceId, device);
+      updatePendingHidSelectionDevices();
+    };
+    const removedListener = (_event, change) => {
+      const device = change?.device || change;
+
+      if (!pendingHidSelection || !device?.deviceId) {
+        return;
+      }
+
+      pendingHidSelection.deviceMap.delete(device.deviceId);
+      updatePendingHidSelectionDevices();
+    };
+
+    pendingHidSelection = {
+      callback,
+      session: currentSession,
+      deviceMap,
+      addedListener,
+      removedListener,
+    };
+
+    currentSession.on('hid-device-added', addedListener);
+    currentSession.on('hid-device-removed', removedListener);
+
+    if (managerWindow && !managerWindow.isDestroyed()) {
+      managerWindow.show();
+      managerWindow.focus();
+    }
+
+    updatePendingHidSelectionDevices();
+  });
+}
+
+function registerIpc() {
+  ipcMain.handle('overlay:get-state', () => overlayState);
+  ipcMain.handle('overlay:toggle-pin', () => togglePinState());
+  ipcMain.handle('overlay:toggle-variant', async () => {
+    const nextVariant = getOverlayVariant() === 'compact' ? 'full' : 'compact';
+    await applyOverlayVariant(nextVariant, { hardSwitch: true });
+    return overlayState;
+  });
+  ipcMain.handle('manager:get-preferences', () => buildManagerPreferences());
+  ipcMain.handle('manager:begin-hid-selection', () => {
+    hidManualSelectionRequested = true;
+    return true;
+  });
+  ipcMain.handle('manager:end-hid-selection', () => {
+    hidManualSelectionRequested = false;
+    return true;
+  });
+  ipcMain.handle('manager:pick-hid-device', (_event, deviceId) => {
+    if (!pendingHidSelection || !pendingHidSelection.deviceMap.has(deviceId)) {
+      return false;
+    }
+
+    clearPendingHidSelection(deviceId);
+    return true;
+  });
+  ipcMain.handle('manager:cancel-hid-selection', () => cancelPendingHidSelection());
+  ipcMain.handle('manager:clear-device-binding', () => clearPreferredDeviceBinding());
+  ipcMain.handle('manager:set-open-at-login', (_event, enabled) => setOpenAtLogin(enabled));
+  ipcMain.handle('manager:set-overlay-variant', async (_event, overlayVariant) => applyOverlayVariant(overlayVariant, { hardSwitch: true }));
+  ipcMain.on('manager:fit-height', (_event, contentHeight) => {
+    fitManagerWindowHeight(contentHeight);
+  });
+  ipcMain.on('overlay:fit-height', (_event, contentHeight) => {
+    fitOverlayWindowHeight(contentHeight);
+  });
+  ipcMain.handle('manager:activate-stable-source', async () => activateStableOverlaySource());
+
+  ipcMain.on('overlay:open-hub-window', () => {
+    showManagerWindow();
+  });
+
+  ipcMain.on('overlay:refresh-hub', () => {
+    refreshManagerWindow();
+  });
+
+  ipcMain.on('overlay:hide', () => {
+    overlayWindow?.hide();
+  });
+
+  ipcMain.on('manager:remember-device', (_event, device) => {
+    rememberPreferredDevice(device);
+  });
+
+  ipcMain.on('manager:state', (_event, managerState) => {
+    if (activeOverlaySource !== 'manager') {
+      return;
+    }
+
+    mergeOverlayState({
+      ...managerState,
+      mode: managerState.mode || 'stable',
+    });
+  });
+
+  ipcMain.on('manager:open-fallback', () => {
+    showFallbackHubWindow();
+  });
+
+  ipcMain.on('hub:state', (_event, hubState) => {
+    if (activeOverlaySource !== 'hub') {
+      return;
+    }
+
+    mergeOverlayState({
+      ...hubState,
+      mode: 'fallback',
+      protocolName: hubState.protocolName || '官网同步电量',
+    });
+
+    if (hubState.batteryPercent !== null && fallbackHubWindow && fallbackHubWindow.isVisible()) {
+      fallbackHubWindow.setTitle(`${hubState.deviceName || 'ATK 设备'} ${hubState.batteryPercent}%`);
+    }
+  });
+}
+
+function boot() {
+  app.setAppUserModelId('atk.overlay.prototype');
+  setOpenAtLogin(Boolean(settings.openAtLogin));
+  registerDeviceHandlers();
+  registerIpc();
+  createOverlayWindow();
+  createManagerWindow();
+  createTray();
+}
+
+if (hasSingleInstanceLock) {
+  app.whenReady().then(boot);
+}
+
+app.on('second-instance', () => {
+  showOverlayWindow();
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
+});
+
+app.on('window-all-closed', (event) => {
+  event.preventDefault();
+});
+
+app.on('activate', () => {
+  showOverlayWindow();
+});
