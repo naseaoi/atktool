@@ -6,7 +6,7 @@
   "scripts": {
     "start": "electron .",
     "start:verbose": "electron . --verbose",
-    "build:win": "electron-builder --win nsis"
+    "build:win": "electron-builder --win nsis --publish never"
   },
   "build": {
     "appId": "atk.overlay.prototype",
