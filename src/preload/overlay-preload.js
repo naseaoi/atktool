@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld('atkOverlay', {
     };
   },
   openHubWindow: () => ipcRenderer.send('overlay:open-hub-window'),
-  refreshHub: () => ipcRenderer.send('overlay:refresh-hub'),
+  requestRefresh: () => ipcRenderer.invoke('manager:request-refresh'),
   togglePin: () => ipcRenderer.invoke('overlay:toggle-pin'),
   toggleVariant: () => ipcRenderer.invoke('overlay:toggle-variant'),
   fitHeight: (contentHeight) => ipcRenderer.send('overlay:fit-height', contentHeight),

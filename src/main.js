@@ -26,6 +26,10 @@ const OVERLAY_VARIANTS = {
   },
 };
 const MANAGER_MIN_HEIGHT = 560;
+const WORKER_REBUILD_INTERVAL_MS = 12 * 60 * 60 * 1000;
+const WORKER_REBUILD_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+const WORKER_REBUILD_MEMORY_LIMIT_KB = 140 * 1024;
+const WORKER_REBUILD_MIN_UPTIME_MS = 5 * 60 * 1000;
 const TRAY_ICON_VERSION = 'v3';
 const TRAY_ICON_SIZE = 64;
 const TRAY_DIGIT_SEGMENTS = {
@@ -46,9 +50,13 @@ const GENERIC_DEVICE_NAME_PATTERN = /wireless mouse|mouse|dongle|receiver|nano|h
 let overlayWindow = null;
 let managerWindow = null;
 let fallbackHubWindow = null;
+let workerWindow = null;
 let tray = null;
 let isQuitting = false;
 let activeOverlaySource = 'manager';
+let workerRebuildInFlight = false;
+let workerStartedAt = 0;
+let workerMaintenanceTimer = null;
 let hidManualSelectionRequested = false;
 let pendingHidSelection = null;
 let settings = readSettings();
@@ -65,12 +73,151 @@ let overlayState = {
   mode: 'stable',
   alwaysOnTop: settings.alwaysOnTop,
   overlayVariant: settings.overlayVariant === 'compact' ? 'compact' : 'full',
+  grantedDevicesCount: 0,
 };
+
+app.disableHardwareAcceleration();
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) {
   app.quit();
+}
+
+function formatMemoryMegabytes(valueInKilobytes = 0) {
+  return `${(valueInKilobytes / 1024).toFixed(1)}MB`;
+}
+
+function logMemorySnapshot(label) {
+  if (!app.isReady()) {
+    return;
+  }
+
+  try {
+    const metrics = app.getAppMetrics()
+      .map((metric) => {
+        const memory = metric.memory || {};
+        return `${metric.type}:${metric.pid}:${formatMemoryMegabytes(memory.workingSetSize)}`;
+      })
+      .join(', ');
+
+    console.info(`[memory] ${label} => ${metrics}`);
+  } catch (error) {
+    console.warn(`[memory] ${label} => ${error.message}`);
+  }
+}
+
+function isOverlayVisible() {
+  return Boolean(overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible());
+}
+
+function notifyWorkerOverlayVisibilityChanged() {
+  if (!workerWindow || workerWindow.isDestroyed()) {
+    return;
+  }
+
+  workerWindow.webContents.send('worker:overlay-visibility', isOverlayVisible());
+}
+
+function notifyWorkerRuntimeModeChanged(mode = activeOverlaySource === 'hub' ? 'fallback' : 'stable') {
+  if (!workerWindow || workerWindow.isDestroyed()) {
+    return;
+  }
+
+  workerWindow.webContents.send('worker:runtime-mode', mode);
+}
+
+function getWorkerProcessMetrics() {
+  if (!workerWindow || workerWindow.isDestroyed()) {
+    return null;
+  }
+
+  const pid = workerWindow.webContents.getOSProcessId();
+  if (!Number.isFinite(pid) || pid <= 0) {
+    return null;
+  }
+
+  return app.getAppMetrics().find((metric) => metric.pid === pid) || null;
+}
+
+function clearWorkerMaintenanceTimer() {
+  if (!workerMaintenanceTimer) {
+    return;
+  }
+
+  clearInterval(workerMaintenanceTimer);
+  workerMaintenanceTimer = null;
+}
+
+function scheduleWorkerMaintenance() {
+  if (workerMaintenanceTimer || isQuitting) {
+    return;
+  }
+
+  workerMaintenanceTimer = setInterval(() => {
+    maintainWorkerWindow();
+  }, WORKER_REBUILD_CHECK_INTERVAL_MS);
+
+  workerMaintenanceTimer.unref?.();
+}
+
+function rebuildWorkerWindow(reason) {
+  if (workerRebuildInFlight || isQuitting) {
+    return false;
+  }
+
+  if (!workerWindow || workerWindow.isDestroyed()) {
+    createWorkerWindow();
+    return false;
+  }
+
+  const currentWorkerWindow = workerWindow;
+  workerRebuildInFlight = true;
+  console.info(`[worker] 重建后台采集器：${reason}`);
+  logMemorySnapshot(`worker-rebuild-before:${reason}`);
+
+  currentWorkerWindow.once('closed', () => {
+    workerRebuildInFlight = false;
+
+    if (!isQuitting) {
+      createWorkerWindow();
+    }
+  });
+
+  currentWorkerWindow.destroy();
+  return true;
+}
+
+function maintainWorkerWindow() {
+  if (isQuitting || workerRebuildInFlight || activeOverlaySource === 'hub') {
+    return;
+  }
+
+  if (!workerWindow || workerWindow.isDestroyed()) {
+    createWorkerWindow();
+    return;
+  }
+
+  if (isOverlayVisible()) {
+    return;
+  }
+
+  const uptimeMs = Date.now() - workerStartedAt;
+  if (uptimeMs >= WORKER_REBUILD_INTERVAL_MS) {
+    rebuildWorkerWindow(`uptime-${Math.round(uptimeMs / 3600000)}h`);
+    return;
+  }
+
+  if (uptimeMs < WORKER_REBUILD_MIN_UPTIME_MS) {
+    return;
+  }
+
+  const workerMetrics = getWorkerProcessMetrics();
+  const workingSetSize = workerMetrics?.memory?.workingSetSize || 0;
+
+  if (workingSetSize >= WORKER_REBUILD_MEMORY_LIMIT_KB) {
+    rebuildWorkerWindow(`memory-${formatMemoryMegabytes(workingSetSize)}`);
+  }
 }
 
 function createCrcTable() {
@@ -260,6 +407,7 @@ function setActiveOverlaySource(source) {
   }
 
   activeOverlaySource = source === 'hub' ? 'hub' : 'manager';
+  notifyWorkerRuntimeModeChanged(activeOverlaySource === 'hub' ? 'fallback' : 'stable');
 }
 
 async function activateStableOverlaySource() {
@@ -599,20 +747,23 @@ function loadTrayIconFromFile(percent = null) {
 }
 
 function notifyManagerPreferencesChanged() {
-  if (!managerWindow || managerWindow.isDestroyed()) {
-    return;
+  const preferences = buildManagerPreferences();
+
+  if (managerWindow && !managerWindow.isDestroyed()) {
+    managerWindow.webContents.send('manager:preferences', preferences);
   }
 
-  managerWindow.webContents.send('manager:preferences', buildManagerPreferences());
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('manager:preferences', preferences);
+  }
+
+  if (workerWindow && !workerWindow.isDestroyed()) {
+    workerWindow.webContents.send('manager:preferences', preferences);
+  }
 }
 
 function notifyManagerOverlayStateChanged() {
   if (!managerWindow || managerWindow.isDestroyed()) {
-    return;
-  }
-
-  // 管理页自己的本地直连状态由渲染层直接维护，只在官网同步接管时才需要主进程回推。
-  if (activeOverlaySource !== 'hub' || overlayState.mode !== 'fallback') {
     return;
   }
 
@@ -893,7 +1044,67 @@ function updatePendingHidSelectionDevices() {
   syncManagerHidSelectionState();
 }
 
+function createWorkerWindow() {
+  if (workerWindow && !workerWindow.isDestroyed()) {
+    return workerWindow;
+  }
+
+  workerWindow = new BrowserWindow({
+    width: 1,
+    height: 1,
+    show: false,
+    frame: false,
+    skipTaskbar: true,
+    resizable: false,
+    focusable: false,
+    maximizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    closable: false,
+    roundedCorners: false,
+    thickFrame: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload', 'worker-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+      webgl: false,
+      spellcheck: false,
+      images: false,
+    },
+  });
+  workerStartedAt = Date.now();
+
+  workerWindow.loadFile(path.join(__dirname, 'renderer', 'worker.html'));
+
+  workerWindow.webContents.on('did-finish-load', () => {
+    notifyManagerPreferencesChanged();
+    notifyWorkerOverlayVisibilityChanged();
+    notifyWorkerRuntimeModeChanged();
+    logMemorySnapshot('worker-window-ready');
+  });
+
+  workerWindow.on('closed', () => {
+    workerWindow = null;
+    logMemorySnapshot('worker-window-closed');
+
+    if (!isQuitting && !workerRebuildInFlight) {
+      setTimeout(() => {
+        if (!workerWindow && !isQuitting) {
+          createWorkerWindow();
+        }
+      }, 400);
+    }
+  });
+
+  return workerWindow;
+}
+
 function createOverlayWindow() {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    return overlayWindow;
+  }
+
   const overlayVariant = getOverlayVariant();
   const metrics = getOverlayMetrics(overlayVariant);
 
@@ -919,6 +1130,7 @@ function createOverlayWindow() {
       preload: path.join(__dirname, 'preload', 'overlay-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   });
 
@@ -929,15 +1141,8 @@ function createOverlayWindow() {
   overlayWindow.once('ready-to-show', () => {
     overlayWindow.show();
     mergeOverlayState({ message: '正在准备 HID 直连采集...' });
-  });
-
-  overlayWindow.on('close', (event) => {
-    if (isQuitting) {
-      return;
-    }
-
-    event.preventDefault();
-    hideOverlayWindow();
+    notifyWorkerOverlayVisibilityChanged();
+    logMemorySnapshot('overlay-window-ready');
   });
 
   overlayWindow.on('move', () => {
@@ -948,6 +1153,16 @@ function createOverlayWindow() {
     const bounds = overlayWindow.getBounds();
     persistOverlayBounds(bounds);
   });
+
+  overlayWindow.on('closed', () => {
+    overlayWindow = null;
+    updateTrayMenu();
+    notifyWorkerOverlayVisibilityChanged();
+    maintainWorkerWindow();
+    logMemorySnapshot('overlay-window-closed');
+  });
+
+  return overlayWindow;
 }
 
 function createManagerWindow() {
@@ -966,27 +1181,40 @@ function createManagerWindow() {
       preload: path.join(__dirname, 'preload', 'manager-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      backgroundThrottling: false,
     },
   });
 
   managerWindow.loadFile(path.join(__dirname, 'renderer', 'manager.html'));
 
-  managerWindow.webContents.on('did-finish-load', () => {
-    updateWindowTaskbarIcons();
-    managerWindow.webContents.send('manager:refresh');
-    syncManagerHidSelectionState();
-  });
-
-  managerWindow.on('close', (event) => {
-    if (isQuitting) {
+  managerWindow.once('ready-to-show', () => {
+    if (!managerWindow || managerWindow.isDestroyed()) {
       return;
     }
 
-    event.preventDefault();
-    cancelPendingHidSelection();
-    hideManagerWindow();
+    managerWindow.show();
+    managerWindow.focus();
+    updateTrayMenu();
+    logMemorySnapshot('manager-window-opened');
   });
+
+  managerWindow.webContents.on('did-finish-load', () => {
+    updateWindowTaskbarIcons();
+    notifyManagerPreferencesChanged();
+    notifyManagerOverlayStateChanged();
+    syncManagerHidSelectionState();
+  });
+
+  managerWindow.on('close', () => {
+    cancelPendingHidSelection();
+  });
+
+  managerWindow.on('closed', () => {
+    managerWindow = null;
+    updateTrayMenu();
+    logMemorySnapshot('manager-window-closed');
+  });
+
+  return managerWindow;
 }
 
 function createFallbackHubWindow() {
@@ -1006,7 +1234,6 @@ function createFallbackHubWindow() {
       preload: path.join(__dirname, 'preload', 'hub-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      backgroundThrottling: false,
     },
   });
 
@@ -1053,13 +1280,10 @@ function createFallbackHubWindow() {
     });
   });
 
-  fallbackHubWindow.on('close', (event) => {
-    if (isQuitting) {
-      return;
-    }
-
-    event.preventDefault();
-    hideFallbackHubWindow();
+  fallbackHubWindow.on('closed', () => {
+    fallbackHubWindow = null;
+    updateTrayMenu();
+    logMemorySnapshot('fallback-window-closed');
   });
 
   return fallbackHubWindow;
@@ -1067,11 +1291,13 @@ function createFallbackHubWindow() {
 
 function showOverlayWindow() {
   if (!overlayWindow || overlayWindow.isDestroyed()) {
+    createOverlayWindow();
     return;
   }
 
   overlayWindow.show();
   overlayWindow.focus();
+  notifyWorkerOverlayVisibilityChanged();
   updateTrayMenu();
 }
 
@@ -1080,12 +1306,12 @@ function hideOverlayWindow() {
     return;
   }
 
-  overlayWindow.hide();
-  updateTrayMenu();
+  overlayWindow.close();
 }
 
 function toggleOverlayWindow() {
   if (!overlayWindow || overlayWindow.isDestroyed()) {
+    createOverlayWindow();
     return;
   }
 
@@ -1099,13 +1325,15 @@ function toggleOverlayWindow() {
 
 function showManagerWindow() {
   if (!managerWindow || managerWindow.isDestroyed()) {
+    createManagerWindow();
     return;
   }
 
   managerWindow.show();
   managerWindow.focus();
-  managerWindow.webContents.send('manager:refresh');
+  notifyManagerPreferencesChanged();
   syncManagerHidSelectionState();
+  notifyManagerOverlayStateChanged();
   updateTrayMenu();
 }
 
@@ -1115,8 +1343,7 @@ function hideManagerWindow() {
   }
 
   cancelPendingHidSelection();
-  managerWindow.hide();
-  updateTrayMenu();
+  managerWindow.close();
 }
 
 function toggleManagerWindow() {
@@ -1133,18 +1360,18 @@ function toggleManagerWindow() {
 }
 
 function refreshManagerWindow() {
-  if (!managerWindow || managerWindow.isDestroyed()) {
-    return;
-  }
-
   setActiveOverlaySource('manager');
-  managerWindow.webContents.send('manager:refresh');
   mergeOverlayState({
     status: 'loading',
     message: '正在刷新 HID 直连状态...',
     needsUserAction: false,
+    sampledAt: new Date().toISOString(),
     mode: 'stable',
   });
+
+  if (workerWindow && !workerWindow.isDestroyed()) {
+    workerWindow.webContents.send('worker:refresh-requested');
+  }
 }
 
 function showFallbackHubWindow() {
@@ -1153,6 +1380,7 @@ function showFallbackHubWindow() {
   hubWindow.show();
   hubWindow.focus();
   updateTrayMenu();
+  logMemorySnapshot('fallback-window-opened');
 }
 
 function hideFallbackHubWindow() {
@@ -1160,8 +1388,7 @@ function hideFallbackHubWindow() {
     return;
   }
 
-  fallbackHubWindow.hide();
-  updateTrayMenu();
+  fallbackHubWindow.close();
 }
 
 function toggleFallbackHubWindow() {
@@ -1437,6 +1664,10 @@ function registerDeviceHandlers() {
 
 function registerIpc() {
   ipcMain.handle('overlay:get-state', () => overlayState);
+  ipcMain.handle('worker:get-bootstrap-state', () => ({
+    overlayVisible: isOverlayVisible(),
+    runtimeMode: activeOverlaySource === 'hub' ? 'fallback' : 'stable',
+  }));
   ipcMain.handle('overlay:toggle-pin', () => togglePinState());
   ipcMain.handle('overlay:toggle-variant', async () => {
     const nextVariant = getOverlayVariant() === 'compact' ? 'full' : 'compact';
@@ -1444,6 +1675,11 @@ function registerIpc() {
     return overlayState;
   });
   ipcMain.handle('manager:get-preferences', () => buildManagerPreferences());
+  ipcMain.handle('manager:get-overlay-state', () => overlayState);
+  ipcMain.handle('manager:request-refresh', () => {
+    refreshManagerWindow();
+    return true;
+  });
   ipcMain.handle('manager:begin-hid-selection', () => {
     hidManualSelectionRequested = true;
     return true;
@@ -1464,6 +1700,10 @@ function registerIpc() {
   ipcMain.handle('manager:clear-device-binding', () => clearPreferredDeviceBinding());
   ipcMain.handle('manager:set-open-at-login', (_event, enabled) => setOpenAtLogin(enabled));
   ipcMain.handle('manager:set-overlay-variant', async (_event, overlayVariant) => applyOverlayVariant(overlayVariant, { hardSwitch: true }));
+  ipcMain.handle('manager:remember-device', (_event, device) => {
+    rememberPreferredDevice(device);
+    return buildManagerPreferences();
+  });
   ipcMain.on('manager:fit-height', (_event, contentHeight) => {
     fitManagerWindowHeight(contentHeight);
   });
@@ -1476,19 +1716,11 @@ function registerIpc() {
     showManagerWindow();
   });
 
-  ipcMain.on('overlay:refresh-hub', () => {
-    refreshManagerWindow();
-  });
-
   ipcMain.on('overlay:hide', () => {
-    overlayWindow?.hide();
+    hideOverlayWindow();
   });
 
-  ipcMain.on('manager:remember-device', (_event, device) => {
-    rememberPreferredDevice(device);
-  });
-
-  ipcMain.on('manager:state', (_event, managerState) => {
+  ipcMain.on('worker:state', (_event, managerState) => {
     if (activeOverlaySource !== 'manager') {
       return;
     }
@@ -1525,9 +1757,11 @@ function boot() {
   setOpenAtLogin(Boolean(settings.openAtLogin));
   registerDeviceHandlers();
   registerIpc();
+  scheduleWorkerMaintenance();
+  createWorkerWindow();
   createOverlayWindow();
-  createManagerWindow();
   createTray();
+  logMemorySnapshot('app-boot');
 }
 
 if (hasSingleInstanceLock) {
@@ -1540,6 +1774,7 @@ app.on('second-instance', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  clearWorkerMaintenanceTimer();
 });
 
 app.on('window-all-closed', (event) => {

@@ -106,7 +106,7 @@ function scheduleFitHeight() {
     const paddingBottom = Number.parseFloat(panelStyle.paddingBottom) || 0;
     const contentHeight = Math.ceil(panelShellEl.scrollHeight + paddingTop + paddingBottom);
 
-    // 按完整版内容真实高度回传，让窗口跟着内容走，避免底部按钮贴边。
+    // 悬浮窗改成按需创建后，继续按内容高度回传，避免每次重开出现底部裁切。
     window.atkOverlay.fitHeight(contentHeight);
   }, 16);
 }
@@ -145,8 +145,8 @@ connectButton.addEventListener('click', () => {
   window.atkOverlay.openHubWindow();
 });
 
-refreshButton.addEventListener('click', () => {
-  window.atkOverlay.refreshHub();
+refreshButton.addEventListener('click', async () => {
+  await window.atkOverlay.requestRefresh();
 });
 
 pinButton.addEventListener('click', async () => {
