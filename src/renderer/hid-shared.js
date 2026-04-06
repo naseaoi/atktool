@@ -114,6 +114,16 @@
   }
 
   function buildCollectionSignature(device) {
+    if (!Array.isArray(device?.collections) || device.collections.length === 0) {
+      return [
+        Number.isFinite(device?.interface) ? device.interface : '',
+        Number.isFinite(device?.usagePage) ? device.usagePage : '',
+        Number.isFinite(device?.usage) ? device.usage : '',
+        Number.isFinite(device?.release) ? device.release : '',
+        normalizeDeviceName(device?.serialNumber),
+      ].join('/');
+    }
+
     // 同一接收器可能暴露多个同名 HID 接口，这里把结构压成签名便于稳定记忆。
     const signatures = [];
 
@@ -207,6 +217,13 @@
   }
 
   function getCollectionFlags(device) {
+    if (!Array.isArray(device?.collections) || device.collections.length === 0) {
+      return {
+        hasMouse: device?.usage === 2,
+        hasKeyboard: device?.usage === 6,
+      };
+    }
+
     let hasMouse = false;
     let hasKeyboard = false;
 
@@ -224,6 +241,13 @@
   }
 
   function supportsKnownBatteryProtocol(device) {
+    if (device?.protocolSupport && typeof device.protocolSupport === 'object') {
+      return {
+        compx: Boolean(device.protocolSupport.compx),
+        hechi: Boolean(device.protocolSupport.hechi),
+      };
+    }
+
     const compxSupport = inspectReportSupport(device, COMPX_REPORT_ID);
     const hechiSupport = inspectReportSupport(device, HECHI_REPORT_ID);
 

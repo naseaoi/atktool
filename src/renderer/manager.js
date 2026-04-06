@@ -29,7 +29,7 @@ const appShellEl = document.querySelector('.app-shell');
 
 let state = {
   status: 'loading',
-  message: '正在准备 WebHID 直连器...',
+  message: '正在准备原生 HID 直连器...',
   batteryPercent: null,
   batteryText: '--',
   deviceName: '',
@@ -55,7 +55,6 @@ let hidSelection = {
   selectedDeviceId: '',
   submitting: false,
 };
-let requestedDeviceBinding = null;
 
 function formatTime(isoTime) {
   if (!isoTime) {
@@ -274,6 +273,10 @@ function renderHidSelectionDialog() {
     const chipRow = document.createElement('div');
     const protocolSupport = shared.supportsKnownBatteryProtocol(device);
     const chips = [];
+    const metaParts = [
+      `VID ${shared.formatHexId(device.vendorId)}`,
+      `PID ${shared.formatHexId(device.productId)}`,
+    ];
 
     item.type = 'button';
     item.className = 'device-picker-item';
@@ -294,7 +297,19 @@ function renderHidSelectionDialog() {
     title.textContent = shared.resolveChooserDeviceName(device);
     topRow.appendChild(title);
 
-    metaRow.textContent = `VID ${shared.formatHexId(device.vendorId)} · PID ${shared.formatHexId(device.productId)}${device.guid ? ` · GUID ${device.guid}` : ''}`;
+    if (Number.isFinite(device.interface)) {
+      metaParts.push(`接口 ${device.interface}`);
+    }
+
+    if (Number.isFinite(device.usagePage)) {
+      metaParts.push(`UsagePage ${device.usagePage}`);
+    }
+
+    if (device.guid) {
+      metaParts.push(`GUID ${device.guid}`);
+    }
+
+    metaRow.textContent = metaParts.join(' · ');
 
     if (device.matchLevel === 2) {
       chips.push({ label: '当前绑定', type: 'accent' });
@@ -308,6 +323,10 @@ function renderHidSelectionDialog() {
 
     if (protocolSupport.hechi) {
       chips.push({ label: 'HECHI 协议', type: 'accent' });
+    }
+
+    if ((device.candidateCount || 0) > 1) {
+      chips.push({ label: `候选接口 x${device.candidateCount}`, type: '' });
     }
 
     for (const chip of chips) {
@@ -356,9 +375,6 @@ async function confirmHidSelection() {
     return;
   }
 
-  const selectedDescriptor = hidSelection.devices.find((device) => device.deviceId === hidSelection.selectedDeviceId) || null;
-  requestedDeviceBinding = selectedDescriptor ? shared.simplifyDevice(selectedDescriptor) : null;
-
   hidSelection = {
     ...hidSelection,
     submitting: true,
@@ -367,7 +383,6 @@ async function confirmHidSelection() {
 
   const didSubmit = await window.atkManager.pickHidDevice(hidSelection.selectedDeviceId).catch(() => false);
   if (!didSubmit) {
-    requestedDeviceBinding = null;
     closeHidSelectionDialog();
     hidSelection = {
       ...hidSelection,
@@ -381,8 +396,6 @@ async function cancelHidSelection() {
   if (hidSelection.submitting) {
     return;
   }
-
-  requestedDeviceBinding = null;
 
   hidSelection = {
     ...hidSelection,
@@ -398,17 +411,6 @@ async function cancelHidSelection() {
 }
 
 async function authorizeDevice() {
-  if (!navigator.hid) {
-    applyState({
-      status: 'error',
-      message: '当前 Electron 环境没有打开 WebHID 能力，无法建立稳定直连。',
-      needsUserAction: true,
-      sampledAt: new Date().toISOString(),
-      mode: 'stable',
-    });
-    return;
-  }
-
   setPendingAction('authorize');
 
   try {
@@ -416,17 +418,15 @@ async function authorizeDevice() {
     applyState({
       status: 'authorizing',
       message: hasBoundDevice()
-        ? '正在打开设备选择面板，请选择新的鼠标或接收器。'
-        : '正在打开设备选择面板，请选择你的鼠标或接收器。',
+        ? '正在枚举原生 HID 设备，请选择新的鼠标或接收器。'
+        : '正在枚举原生 HID 设备，请选择你的鼠标或接收器。',
       needsUserAction: false,
       sampledAt: new Date().toISOString(),
       mode: 'stable',
     });
 
-    await window.atkManager.beginHidSelection();
-    const grantedDevices = await navigator.hid.requestDevice({ filters: [] });
-    if (!grantedDevices.length) {
-      requestedDeviceBinding = null;
+    const hasDevices = await window.atkManager.beginHidSelection();
+    if (!hasDevices) {
       showWaitingForBinding(
         hasBoundDevice()
           ? '本次没有选择新设备，当前仍保留原绑定。若鼠标未出现，请确认它使用的是 2.4G 接收器或有线连接。'
@@ -435,35 +435,16 @@ async function authorizeDevice() {
       return;
     }
 
-    const knownDevices = await navigator.hid.getDevices().catch(() => []);
-    const candidateDevices = shared.mergeUniqueDevices(grantedDevices, knownDevices);
-    const selectedDevice = shared.resolveAuthorizedDevice(candidateDevices, requestedDeviceBinding || grantedDevices[0] || null);
-    requestedDeviceBinding = null;
-
-    if (selectedDevice) {
-      const nextPreferences = await window.atkManager.rememberDevice(shared.simplifyDevice(selectedDevice));
-      applyPreferences(nextPreferences);
-    }
-
-    applyState({
-      status: 'loading',
-      message: '设备授权完成，正在建立本地直连...',
-      needsUserAction: false,
-      sampledAt: new Date().toISOString(),
-      mode: 'stable',
-    });
-    await window.atkManager.requestRefresh();
+    renderHidSelectionDialog();
   } catch (error) {
-    requestedDeviceBinding = null;
     applyState({
       status: 'error',
-      message: `设备授权失败：${error.message}`,
+      message: `枚举原生 HID 设备失败：${error.message}`,
       needsUserAction: true,
       sampledAt: new Date().toISOString(),
       mode: 'stable',
     });
   } finally {
-    await window.atkManager.endHidSelection().catch(() => {});
     setPendingAction('');
   }
 }
@@ -501,13 +482,6 @@ async function unbindCurrentDevice() {
   setPendingAction('unbind');
 
   try {
-    const devices = navigator.hid ? await navigator.hid.getDevices().catch(() => []) : [];
-    const boundDevice = shared.pickPreferredDevice(devices, preferredDevice);
-
-    if (boundDevice && typeof boundDevice.forget === 'function') {
-      await boundDevice.forget().catch(() => {});
-    }
-
     const nextPreferences = await window.atkManager.clearDeviceBinding();
     applyPreferences(nextPreferences);
     showWaitingForBinding('当前设备绑定已解除。如需继续读取电量，请重新选择并绑定设备。');
@@ -599,15 +573,11 @@ async function boot() {
   updateActionButtons();
   scheduleFitHeight();
 
-  if (!navigator.hid) {
-    applyState({
-      status: 'error',
-      message: '当前 Electron 环境没有打开 WebHID 能力，无法建立稳定直连。',
-      needsUserAction: true,
-      sampledAt: new Date().toISOString(),
-      mode: 'stable',
-    });
-  } else if (!hasBoundDevice() && initialOverlayState.status === 'loading') {
+  window.requestAnimationFrame(() => {
+    document.body.dataset.ready = 'true';
+  });
+
+  if (!hasBoundDevice() && initialOverlayState.status === 'loading') {
     showWaitingForBinding('还没有绑定设备。请先选择并绑定设备，并确保鼠标使用 2.4G 或有线连接。');
   }
 }

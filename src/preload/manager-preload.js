@@ -13,7 +13,6 @@ contextBridge.exposeInMainWorld('atkManager', {
   pickHidDevice: (deviceId) => ipcRenderer.invoke('manager:pick-hid-device', deviceId),
   cancelHidSelection: () => ipcRenderer.invoke('manager:cancel-hid-selection'),
   clearDeviceBinding: () => ipcRenderer.invoke('manager:clear-device-binding'),
-  rememberDevice: (device) => ipcRenderer.invoke('manager:remember-device', device),
   openFallback: () => ipcRenderer.send('manager:open-fallback'),
   onPreferencesChanged: (callback) => {
     const listener = (_event, preferences) => callback(preferences);

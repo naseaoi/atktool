@@ -8,10 +8,10 @@ const {
   Tray,
   nativeImage,
   ipcMain,
-  session,
 } = require('electron');
 
 const { readSettings, writeSettings } = require('./lib/store');
+const { NativeBatteryRuntime } = require('./lib/native-hid');
 
 const HUB_URL = 'https://hub.atk.pro/';
 const HUB_ORIGIN = new URL(HUB_URL).origin;
@@ -26,10 +26,6 @@ const OVERLAY_VARIANTS = {
   },
 };
 const MANAGER_MIN_HEIGHT = 560;
-const WORKER_REBUILD_INTERVAL_MS = 12 * 60 * 60 * 1000;
-const WORKER_REBUILD_CHECK_INTERVAL_MS = 15 * 60 * 1000;
-const WORKER_REBUILD_MEMORY_LIMIT_KB = 140 * 1024;
-const WORKER_REBUILD_MIN_UPTIME_MS = 5 * 60 * 1000;
 const TRAY_ICON_VERSION = 'v3';
 const TRAY_ICON_SIZE = 64;
 const TRAY_DIGIT_SEGMENTS = {
@@ -50,14 +46,13 @@ const GENERIC_DEVICE_NAME_PATTERN = /wireless mouse|mouse|dongle|receiver|nano|h
 let overlayWindow = null;
 let managerWindow = null;
 let fallbackHubWindow = null;
-let workerWindow = null;
+let nativeBatteryRuntime = null;
 let tray = null;
 let isQuitting = false;
 let activeOverlaySource = 'manager';
-let workerRebuildInFlight = false;
-let workerStartedAt = 0;
-let workerMaintenanceTimer = null;
-let hidManualSelectionRequested = false;
+let managerWindowReady = false;
+let managerWindowPendingInitialShow = false;
+let managerWindowShowTimer = null;
 let pendingHidSelection = null;
 let settings = readSettings();
 let overlayState = {
@@ -109,115 +104,6 @@ function logMemorySnapshot(label) {
 
 function isOverlayVisible() {
   return Boolean(overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isVisible());
-}
-
-function notifyWorkerOverlayVisibilityChanged() {
-  if (!workerWindow || workerWindow.isDestroyed()) {
-    return;
-  }
-
-  workerWindow.webContents.send('worker:overlay-visibility', isOverlayVisible());
-}
-
-function notifyWorkerRuntimeModeChanged(mode = activeOverlaySource === 'hub' ? 'fallback' : 'stable') {
-  if (!workerWindow || workerWindow.isDestroyed()) {
-    return;
-  }
-
-  workerWindow.webContents.send('worker:runtime-mode', mode);
-}
-
-function getWorkerProcessMetrics() {
-  if (!workerWindow || workerWindow.isDestroyed()) {
-    return null;
-  }
-
-  const pid = workerWindow.webContents.getOSProcessId();
-  if (!Number.isFinite(pid) || pid <= 0) {
-    return null;
-  }
-
-  return app.getAppMetrics().find((metric) => metric.pid === pid) || null;
-}
-
-function clearWorkerMaintenanceTimer() {
-  if (!workerMaintenanceTimer) {
-    return;
-  }
-
-  clearInterval(workerMaintenanceTimer);
-  workerMaintenanceTimer = null;
-}
-
-function scheduleWorkerMaintenance() {
-  if (workerMaintenanceTimer || isQuitting) {
-    return;
-  }
-
-  workerMaintenanceTimer = setInterval(() => {
-    maintainWorkerWindow();
-  }, WORKER_REBUILD_CHECK_INTERVAL_MS);
-
-  workerMaintenanceTimer.unref?.();
-}
-
-function rebuildWorkerWindow(reason) {
-  if (workerRebuildInFlight || isQuitting) {
-    return false;
-  }
-
-  if (!workerWindow || workerWindow.isDestroyed()) {
-    createWorkerWindow();
-    return false;
-  }
-
-  const currentWorkerWindow = workerWindow;
-  workerRebuildInFlight = true;
-  console.info(`[worker] 重建后台采集器：${reason}`);
-  logMemorySnapshot(`worker-rebuild-before:${reason}`);
-
-  currentWorkerWindow.once('closed', () => {
-    workerRebuildInFlight = false;
-
-    if (!isQuitting) {
-      createWorkerWindow();
-    }
-  });
-
-  currentWorkerWindow.destroy();
-  return true;
-}
-
-function maintainWorkerWindow() {
-  if (isQuitting || workerRebuildInFlight || activeOverlaySource === 'hub') {
-    return;
-  }
-
-  if (!workerWindow || workerWindow.isDestroyed()) {
-    createWorkerWindow();
-    return;
-  }
-
-  if (isOverlayVisible()) {
-    return;
-  }
-
-  const uptimeMs = Date.now() - workerStartedAt;
-  if (uptimeMs >= WORKER_REBUILD_INTERVAL_MS) {
-    rebuildWorkerWindow(`uptime-${Math.round(uptimeMs / 3600000)}h`);
-    return;
-  }
-
-  if (uptimeMs < WORKER_REBUILD_MIN_UPTIME_MS) {
-    return;
-  }
-
-  const workerMetrics = getWorkerProcessMetrics();
-  const workingSetSize = workerMetrics?.memory?.workingSetSize || 0;
-
-  if (workingSetSize >= WORKER_REBUILD_MEMORY_LIMIT_KB) {
-    rebuildWorkerWindow(`memory-${formatMemoryMegabytes(workingSetSize)}`);
-  }
 }
 
 function createCrcTable() {
@@ -407,7 +293,10 @@ function setActiveOverlaySource(source) {
   }
 
   activeOverlaySource = source === 'hub' ? 'hub' : 'manager';
-  notifyWorkerRuntimeModeChanged(activeOverlaySource === 'hub' ? 'fallback' : 'stable');
+
+  if (nativeBatteryRuntime) {
+    nativeBatteryRuntime.setSuspended(activeOverlaySource === 'hub');
+  }
 }
 
 async function activateStableOverlaySource() {
@@ -685,10 +574,56 @@ function fitManagerWindowHeight(contentHeight) {
   const currentBounds = managerWindow.getContentBounds();
 
   if (Math.abs(currentBounds.height - targetHeight) <= 2) {
+    scheduleManagerWindowInitialShow();
     return;
   }
 
   managerWindow.setContentSize(currentBounds.width, targetHeight);
+  scheduleManagerWindowInitialShow(120);
+}
+
+function clearManagerWindowShowTimer() {
+  if (!managerWindowShowTimer) {
+    return;
+  }
+
+  clearTimeout(managerWindowShowTimer);
+  managerWindowShowTimer = null;
+}
+
+function scheduleManagerWindowInitialShow(delay = 96) {
+  if (
+    !managerWindow ||
+    managerWindow.isDestroyed() ||
+    !managerWindowPendingInitialShow ||
+    !managerWindowReady
+  ) {
+    return;
+  }
+
+  clearManagerWindowShowTimer();
+  managerWindowShowTimer = setTimeout(() => {
+    flushManagerWindowInitialShow();
+  }, delay);
+  managerWindowShowTimer.unref?.();
+}
+
+function flushManagerWindowInitialShow() {
+  if (
+    !managerWindow ||
+    managerWindow.isDestroyed() ||
+    !managerWindowPendingInitialShow ||
+    !managerWindowReady
+  ) {
+    return;
+  }
+
+  managerWindowPendingInitialShow = false;
+  clearManagerWindowShowTimer();
+  managerWindow.show();
+  managerWindow.focus();
+  updateTrayMenu();
+  logMemorySnapshot('manager-window-opened');
 }
 
 function fitOverlayWindowHeight(contentHeight) {
@@ -755,10 +690,6 @@ function notifyManagerPreferencesChanged() {
 
   if (overlayWindow && !overlayWindow.isDestroyed()) {
     overlayWindow.webContents.send('manager:preferences', preferences);
-  }
-
-  if (workerWindow && !workerWindow.isDestroyed()) {
-    workerWindow.webContents.send('manager:preferences', preferences);
   }
 }
 
@@ -996,34 +927,20 @@ function syncManagerHidSelectionState() {
 
   notifyManagerHidSelection({
     open: true,
-    devices: buildHidChooserDeviceList(pendingHidSelection.deviceMap),
+    devices: Array.from(pendingHidSelection.deviceMap.values()),
   });
 }
 
 function clearPendingHidSelection(callbackDeviceId) {
+  void callbackDeviceId;
+
   if (!pendingHidSelection) {
     return false;
   }
 
-  const { callback, session: currentSession, addedListener, removedListener } = pendingHidSelection;
   pendingHidSelection = null;
-  hidManualSelectionRequested = false;
-
-  if (currentSession && addedListener) {
-    currentSession.removeListener('hid-device-added', addedListener);
-  }
-
-  if (currentSession && removedListener) {
-    currentSession.removeListener('hid-device-removed', removedListener);
-  }
 
   notifyManagerHidSelection({ open: false, devices: [] });
-
-  if (callbackDeviceId) {
-    callback(callbackDeviceId);
-  } else {
-    callback();
-  }
 
   return true;
 }
@@ -1042,62 +959,6 @@ function updatePendingHidSelectionDevices() {
   }
 
   syncManagerHidSelectionState();
-}
-
-function createWorkerWindow() {
-  if (workerWindow && !workerWindow.isDestroyed()) {
-    return workerWindow;
-  }
-
-  workerWindow = new BrowserWindow({
-    width: 1,
-    height: 1,
-    show: false,
-    frame: false,
-    skipTaskbar: true,
-    resizable: false,
-    focusable: false,
-    maximizable: false,
-    minimizable: false,
-    fullscreenable: false,
-    closable: false,
-    roundedCorners: false,
-    thickFrame: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload', 'worker-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      backgroundThrottling: false,
-      webgl: false,
-      spellcheck: false,
-      images: false,
-    },
-  });
-  workerStartedAt = Date.now();
-
-  workerWindow.loadFile(path.join(__dirname, 'renderer', 'worker.html'));
-
-  workerWindow.webContents.on('did-finish-load', () => {
-    notifyManagerPreferencesChanged();
-    notifyWorkerOverlayVisibilityChanged();
-    notifyWorkerRuntimeModeChanged();
-    logMemorySnapshot('worker-window-ready');
-  });
-
-  workerWindow.on('closed', () => {
-    workerWindow = null;
-    logMemorySnapshot('worker-window-closed');
-
-    if (!isQuitting && !workerRebuildInFlight) {
-      setTimeout(() => {
-        if (!workerWindow && !isQuitting) {
-          createWorkerWindow();
-        }
-      }, 400);
-    }
-  });
-
-  return workerWindow;
 }
 
 function createOverlayWindow() {
@@ -1141,7 +1002,7 @@ function createOverlayWindow() {
   overlayWindow.once('ready-to-show', () => {
     overlayWindow.show();
     mergeOverlayState({ message: '正在准备 HID 直连采集...' });
-    notifyWorkerOverlayVisibilityChanged();
+    nativeBatteryRuntime?.setOverlayVisible(true);
     logMemorySnapshot('overlay-window-ready');
   });
 
@@ -1157,8 +1018,7 @@ function createOverlayWindow() {
   overlayWindow.on('closed', () => {
     overlayWindow = null;
     updateTrayMenu();
-    notifyWorkerOverlayVisibilityChanged();
-    maintainWorkerWindow();
+    nativeBatteryRuntime?.setOverlayVisible(false);
     logMemorySnapshot('overlay-window-closed');
   });
 
@@ -1166,6 +1026,10 @@ function createOverlayWindow() {
 }
 
 function createManagerWindow() {
+  managerWindowPendingInitialShow = true;
+  managerWindowReady = false;
+  clearManagerWindowShowTimer();
+
   managerWindow = new BrowserWindow({
     width: 880,
     height: 720,
@@ -1191,10 +1055,8 @@ function createManagerWindow() {
       return;
     }
 
-    managerWindow.show();
-    managerWindow.focus();
-    updateTrayMenu();
-    logMemorySnapshot('manager-window-opened');
+    managerWindowReady = true;
+    scheduleManagerWindowInitialShow(180);
   });
 
   managerWindow.webContents.on('did-finish-load', () => {
@@ -1209,6 +1071,9 @@ function createManagerWindow() {
   });
 
   managerWindow.on('closed', () => {
+    clearManagerWindowShowTimer();
+    managerWindowReady = false;
+    managerWindowPendingInitialShow = false;
     managerWindow = null;
     updateTrayMenu();
     logMemorySnapshot('manager-window-closed');
@@ -1297,7 +1162,7 @@ function showOverlayWindow() {
 
   overlayWindow.show();
   overlayWindow.focus();
-  notifyWorkerOverlayVisibilityChanged();
+  nativeBatteryRuntime?.setOverlayVisible(true);
   updateTrayMenu();
 }
 
@@ -1369,9 +1234,7 @@ function refreshManagerWindow() {
     mode: 'stable',
   });
 
-  if (workerWindow && !workerWindow.isDestroyed()) {
-    workerWindow.webContents.send('worker:refresh-requested');
-  }
+  void nativeBatteryRuntime?.refreshNow({ forceReopen: true });
 }
 
 function showFallbackHubWindow() {
@@ -1512,6 +1375,8 @@ function rememberPreferredDevice(device) {
     return;
   }
 
+  nativeBatteryRuntime?.setPreferredBinding(normalized);
+
   const currentKey = getDeviceBindingKey(settings.preferredHidDevice);
   const nextKey = getDeviceBindingKey(normalized);
   const currentDisplayBindingKey = getDeviceBindingKey(settings.displayDeviceNameBinding);
@@ -1561,113 +1426,8 @@ function clearPreferredDeviceBinding() {
   };
 }
 
-function isAllowedOrigin(origin) {
-  return typeof origin === 'string' && (origin === HUB_ORIGIN || origin.startsWith('file://'));
-}
-
-function registerDeviceHandlers() {
-  const currentSession = session.defaultSession;
-
-  currentSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
-    if (permission === 'hid') {
-      return isAllowedOrigin(requestingOrigin);
-    }
-
-    return false;
-  });
-
-  currentSession.setDevicePermissionHandler((details) => {
-    if (details.deviceType !== 'hid' || !isAllowedOrigin(details.origin)) {
-      return false;
-    }
-
-    if (hidManualSelectionRequested) {
-      return false;
-    }
-
-    // 仅允许当前已绑定的那只设备自动恢复权限；更换绑定时强制走系统选择框。
-    return getDeviceBindingMatchLevel(details.device, settings.preferredHidDevice) > 0;
-  });
-
-  currentSession.on('select-hid-device', (event, details, callback) => {
-    event.preventDefault();
-
-    const requestingUrl = details?.frame?.url || details?.frame?.origin || 'file://';
-
-    if (!isAllowedOrigin(requestingUrl)) {
-      callback();
-      return;
-    }
-
-    if (!hidManualSelectionRequested) {
-      callback();
-      return;
-    }
-
-    // Electron 不会替我们弹系统选择器，这里把 requestDevice 转成管理页内的自定义选择面板。
-    cancelPendingHidSelection();
-
-    const deviceMap = new Map();
-    for (const device of Array.isArray(details.deviceList) ? details.deviceList : []) {
-      if (device?.deviceId) {
-        deviceMap.set(device.deviceId, device);
-      }
-    }
-
-    if (deviceMap.size === 0) {
-      hidManualSelectionRequested = false;
-      notifyManagerHidSelection({ open: false, devices: [] });
-      callback();
-      return;
-    }
-
-    const addedListener = (_event, change) => {
-      const device = change?.device || change;
-
-      if (!pendingHidSelection || !device?.deviceId) {
-        return;
-      }
-
-      pendingHidSelection.deviceMap.set(device.deviceId, device);
-      updatePendingHidSelectionDevices();
-    };
-    const removedListener = (_event, change) => {
-      const device = change?.device || change;
-
-      if (!pendingHidSelection || !device?.deviceId) {
-        return;
-      }
-
-      pendingHidSelection.deviceMap.delete(device.deviceId);
-      updatePendingHidSelectionDevices();
-    };
-
-    pendingHidSelection = {
-      callback,
-      session: currentSession,
-      deviceMap,
-      addedListener,
-      removedListener,
-    };
-
-    currentSession.on('hid-device-added', addedListener);
-    currentSession.on('hid-device-removed', removedListener);
-
-    if (managerWindow && !managerWindow.isDestroyed()) {
-      managerWindow.show();
-      managerWindow.focus();
-    }
-
-    updatePendingHidSelectionDevices();
-  });
-}
-
 function registerIpc() {
   ipcMain.handle('overlay:get-state', () => overlayState);
-  ipcMain.handle('worker:get-bootstrap-state', () => ({
-    overlayVisible: isOverlayVisible(),
-    runtimeMode: activeOverlaySource === 'hub' ? 'fallback' : 'stable',
-  }));
   ipcMain.handle('overlay:toggle-pin', () => togglePinState());
   ipcMain.handle('overlay:toggle-variant', async () => {
     const nextVariant = getOverlayVariant() === 'compact' ? 'full' : 'compact';
@@ -1680,30 +1440,37 @@ function registerIpc() {
     refreshManagerWindow();
     return true;
   });
-  ipcMain.handle('manager:begin-hid-selection', () => {
-    hidManualSelectionRequested = true;
-    return true;
+  ipcMain.handle('manager:begin-hid-selection', async () => {
+    const devices = await nativeBatteryRuntime.listChooserDevices();
+    pendingHidSelection = {
+      deviceMap: new Map(devices.map((device) => [device.deviceId, device])),
+    };
+    syncManagerHidSelectionState();
+    return devices.length > 0;
   });
-  ipcMain.handle('manager:end-hid-selection', () => {
-    hidManualSelectionRequested = false;
-    return true;
-  });
-  ipcMain.handle('manager:pick-hid-device', (_event, deviceId) => {
+  ipcMain.handle('manager:end-hid-selection', () => clearPendingHidSelection());
+  ipcMain.handle('manager:pick-hid-device', async (_event, deviceId) => {
     if (!pendingHidSelection || !pendingHidSelection.deviceMap.has(deviceId)) {
       return false;
     }
 
-    clearPendingHidSelection(deviceId);
+    const binding = await nativeBatteryRuntime.bindDeviceById(deviceId);
+    if (!binding) {
+      return false;
+    }
+
+    rememberPreferredDevice(binding);
+    clearPendingHidSelection();
+    refreshManagerWindow();
     return true;
   });
   ipcMain.handle('manager:cancel-hid-selection', () => cancelPendingHidSelection());
-  ipcMain.handle('manager:clear-device-binding', () => clearPreferredDeviceBinding());
+  ipcMain.handle('manager:clear-device-binding', async () => {
+    nativeBatteryRuntime?.setPreferredBinding(null);
+    return clearPreferredDeviceBinding();
+  });
   ipcMain.handle('manager:set-open-at-login', (_event, enabled) => setOpenAtLogin(enabled));
   ipcMain.handle('manager:set-overlay-variant', async (_event, overlayVariant) => applyOverlayVariant(overlayVariant, { hardSwitch: true }));
-  ipcMain.handle('manager:remember-device', (_event, device) => {
-    rememberPreferredDevice(device);
-    return buildManagerPreferences();
-  });
   ipcMain.on('manager:fit-height', (_event, contentHeight) => {
     fitManagerWindowHeight(contentHeight);
   });
@@ -1718,17 +1485,6 @@ function registerIpc() {
 
   ipcMain.on('overlay:hide', () => {
     hideOverlayWindow();
-  });
-
-  ipcMain.on('worker:state', (_event, managerState) => {
-    if (activeOverlaySource !== 'manager') {
-      return;
-    }
-
-    mergeOverlayState({
-      ...managerState,
-      mode: managerState.mode || 'stable',
-    });
   });
 
   ipcMain.on('manager:open-fallback', () => {
@@ -1755,12 +1511,27 @@ function registerIpc() {
 function boot() {
   app.setAppUserModelId('atk.overlay.prototype');
   setOpenAtLogin(Boolean(settings.openAtLogin));
-  registerDeviceHandlers();
+  nativeBatteryRuntime = new NativeBatteryRuntime({
+    onStateChange(nextState) {
+      if (activeOverlaySource !== 'manager') {
+        return;
+      }
+
+      mergeOverlayState({
+        ...nextState,
+        mode: nextState.mode || 'stable',
+      });
+    },
+    async onBindingDetected(binding) {
+      rememberPreferredDevice(binding);
+    },
+  });
+  nativeBatteryRuntime.setPreferredBinding(settings.preferredHidDevice);
+  nativeBatteryRuntime.setOverlayVisible(isOverlayVisible());
   registerIpc();
-  scheduleWorkerMaintenance();
-  createWorkerWindow();
   createOverlayWindow();
   createTray();
+  void nativeBatteryRuntime.refreshNow();
   logMemorySnapshot('app-boot');
 }
 
@@ -1774,7 +1545,7 @@ app.on('second-instance', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
-  clearWorkerMaintenanceTimer();
+  void nativeBatteryRuntime?.dispose();
 });
 
 app.on('window-all-closed', (event) => {

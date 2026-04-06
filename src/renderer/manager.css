@@ -30,6 +30,7 @@ body {
 html {
   height: 100%;
   background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  overflow: hidden;
 }
 
 body {
@@ -37,6 +38,12 @@ body {
   padding: 28px;
   isolation: isolate;
   background: transparent;
+  overflow: hidden;
+}
+
+body[data-ready='false'] {
+  overflow: hidden;
+  opacity: 0;
 }
 
 body[data-dialog-open='true'] {
@@ -252,14 +259,16 @@ body[data-status='unsupported'] .status-chip {
 
 .dialog-card {
   width: min(720px, 100%);
-  max-height: min(80vh, 760px);
-  display: grid;
+  height: min(80vh, 760px);
+  display: flex;
+  flex-direction: column;
   gap: 16px;
   padding: 22px;
   border-radius: 24px;
   border: 1px solid rgba(120, 212, 193, 0.24);
   background: linear-gradient(155deg, rgba(10, 25, 31, 0.98), rgba(8, 19, 25, 0.98));
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.34);
+   overflow: hidden;
 }
 
 .dialog-card__header {
@@ -286,8 +295,33 @@ body[data-status='unsupported'] .status-chip {
 
 .device-picker-list {
   display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
   gap: 12px;
   overflow: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(120, 212, 193, 0.5) transparent;
+}
+
+.device-picker-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.device-picker-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.device-picker-list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(120, 212, 193, 0.78), rgba(74, 147, 169, 0.72));
+  background-clip: padding-box;
+}
+
+.device-picker-list::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(139, 230, 213, 0.92), rgba(96, 175, 198, 0.82));
+  background-clip: padding-box;
 }
 
 .device-picker-item {
@@ -363,7 +397,14 @@ body[data-status='unsupported'] .status-chip {
 }
 
 .dialog-actions {
+  position: sticky;
+  bottom: 0;
   justify-content: flex-end;
+  margin-top: auto;
+  padding-top: 4px;
+  padding-bottom: 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(8, 19, 25, 0), rgba(8, 19, 25, 0.98) 28%);
 }
 
 .dialog-actions .primary-button,
