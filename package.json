@@ -1,6 +1,6 @@
 {
   "name": "atktool",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "ATK 鼠标电量悬浮窗原型",
   "main": "src/main.js",
   "scripts": {

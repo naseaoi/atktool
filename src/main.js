@@ -8,8 +8,10 @@ const {
   Tray,
   nativeImage,
   ipcMain,
+  powerMonitor,
 } = require('electron');
 
+const { getLogFilePath, logInfo, logWarn, logError } = require('./lib/logger');
 const { readSettings, writeSettings } = require('./lib/store');
 const { NativeBatteryRuntime } = require('./lib/native-hid');
 
@@ -49,6 +51,7 @@ let fallbackHubWindow = null;
 let nativeBatteryRuntime = null;
 let tray = null;
 let isQuitting = false;
+let unexpectedShutdownHandled = false;
 let activeOverlaySource = 'manager';
 let managerWindowReady = false;
 let managerWindowPendingInitialShow = false;
@@ -96,9 +99,24 @@ function logMemorySnapshot(label) {
       })
       .join(', ');
 
-    console.info(`[memory] ${label} => ${metrics}`);
+    logInfo(`[memory] ${label} => ${metrics}`);
   } catch (error) {
-    console.warn(`[memory] ${label} => ${error.message}`);
+    logWarn(`[memory] ${label} => ${error.message}`, error);
+  }
+}
+
+function sendToWindow(targetWindow, channel, payload, label) {
+  if (!targetWindow || targetWindow.isDestroyed()) {
+    return;
+  }
+
+  try {
+    targetWindow.webContents.send(channel, payload);
+  } catch (error) {
+    logWarn(`${label} 发送失败`, {
+      channel,
+      error,
+    });
   }
 }
 
@@ -654,11 +672,19 @@ function updateWindowTaskbarIcons() {
   const description = overlayState.batteryPercent !== null ? `当前电量 ${overlayState.batteryPercent}` : '暂无电量';
 
   if (managerWindow && !managerWindow.isDestroyed()) {
-    managerWindow.setOverlayIcon(icon, description);
+    try {
+      managerWindow.setOverlayIcon(icon, description);
+    } catch (error) {
+      logWarn('设备管理窗口任务栏图标刷新失败', error);
+    }
   }
 
   if (fallbackHubWindow && !fallbackHubWindow.isDestroyed()) {
-    fallbackHubWindow.setOverlayIcon(icon, description);
+    try {
+      fallbackHubWindow.setOverlayIcon(icon, description);
+    } catch (error) {
+      logWarn('官网同步窗口任务栏图标刷新失败', error);
+    }
   }
 }
 
@@ -677,19 +703,28 @@ function getTrayIconFilePath(percent = null) {
 }
 
 function loadTrayIconFromFile(percent = null) {
-  const filePath = getTrayIconFilePath(percent);
-  return nativeImage.createFromBuffer(fs.readFileSync(filePath));
+  try {
+    const filePath = getTrayIconFilePath(percent);
+    return nativeImage.createFromBuffer(fs.readFileSync(filePath));
+  } catch (error) {
+    // 托盘图标文件写入/读取偶发失败时回退到内存图标，避免主进程被同步 IO 异常带崩。
+    logWarn('托盘图标文件读取失败，回退为内存图标', {
+      percent,
+      error,
+    });
+    return createTrayIcon(percent);
+  }
 }
 
 function notifyManagerPreferencesChanged() {
   const preferences = buildManagerPreferences();
 
   if (managerWindow && !managerWindow.isDestroyed()) {
-    managerWindow.webContents.send('manager:preferences', preferences);
+    sendToWindow(managerWindow, 'manager:preferences', preferences, '设备管理偏好同步');
   }
 
   if (overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.webContents.send('manager:preferences', preferences);
+    sendToWindow(overlayWindow, 'manager:preferences', preferences, '悬浮窗偏好同步');
   }
 }
 
@@ -698,7 +733,7 @@ function notifyManagerOverlayStateChanged() {
     return;
   }
 
-  managerWindow.webContents.send('manager:overlay-state', overlayState);
+  sendToWindow(managerWindow, 'manager:overlay-state', overlayState, '设备管理状态同步');
 }
 
 function persistOverlayBounds(bounds, variant = getOverlayVariant()) {
@@ -814,7 +849,7 @@ function mergeOverlayState(patch) {
   overlayState.message = getOverlayMessage(overlayState);
 
   if (overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.webContents.send('overlay:state-changed', overlayState);
+    sendToWindow(overlayWindow, 'overlay:state-changed', overlayState, '悬浮窗状态同步');
   }
 
   notifyManagerOverlayStateChanged();
@@ -1338,19 +1373,95 @@ function updateTrayMenu() {
     },
   ]);
 
-  tray.setContextMenu(contextMenu);
-  tray.setImage(loadTrayIconFromFile(overlayState.batteryPercent));
-  tray.setToolTip(
-    overlayState.batteryPercent !== null
-      ? `ATK 电量 ${overlayState.batteryPercent}%`
-      : 'ATK 电量悬浮窗'
-  );
+  try {
+    tray.setContextMenu(contextMenu);
+    tray.setImage(loadTrayIconFromFile(overlayState.batteryPercent));
+    tray.setToolTip(
+      overlayState.batteryPercent !== null
+        ? `ATK 电量 ${overlayState.batteryPercent}%`
+        : 'ATK 电量悬浮窗'
+    );
+  } catch (error) {
+    logError('托盘菜单刷新失败', {
+      status: overlayState.status,
+      batteryPercent: overlayState.batteryPercent,
+      error,
+    });
+  }
 }
 
 function createTray() {
-  tray = new Tray(loadTrayIconFromFile());
-  tray.on('click', () => toggleOverlayWindow());
-  updateTrayMenu();
+  try {
+    tray = new Tray(loadTrayIconFromFile());
+    tray.on('click', () => toggleOverlayWindow());
+    updateTrayMenu();
+  } catch (error) {
+    logError('创建托盘失败', error);
+    throw error;
+  }
+}
+
+function relaunchAfterUnexpectedFailure(reason, detail) {
+  if (unexpectedShutdownHandled || isQuitting) {
+    return;
+  }
+
+  unexpectedShutdownHandled = true;
+  logError(`主进程发生未恢复异常，准备重启应用（${reason}）`, detail);
+
+  try {
+    if (app.isReady()) {
+      app.relaunch();
+    }
+  } catch (error) {
+    logError('调用 app.relaunch 失败', error);
+  }
+
+  setTimeout(() => {
+    try {
+      app.exit(1);
+    } catch (error) {
+      logError('调用 app.exit 失败，回退到 process.exit', error);
+      process.exit(1);
+    }
+  }, 120);
+}
+
+function registerRuntimeDiagnostics() {
+  process.on('uncaughtException', (error) => {
+    relaunchAfterUnexpectedFailure('uncaughtException', error);
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    logError('主进程出现未处理 Promise 拒绝', reason);
+  });
+
+  process.on('warning', (warning) => {
+    logWarn('主进程 warning', warning);
+  });
+
+  app.on('render-process-gone', (_event, webContents, details) => {
+    logWarn('渲染进程退出', {
+      reason: details.reason,
+      exitCode: details.exitCode,
+      url: typeof webContents.getURL === 'function' ? webContents.getURL() : '',
+    });
+  });
+
+  app.on('child-process-gone', (_event, details) => {
+    logWarn('Electron 子进程退出', details);
+  });
+}
+
+function registerPowerMonitor() {
+  powerMonitor.on('suspend', () => {
+    logInfo('系统即将挂起');
+  });
+
+  powerMonitor.on('resume', () => {
+    logInfo('系统恢复运行，触发 HID 重连刷新');
+    void nativeBatteryRuntime?.refreshNow({ forceReopen: true });
+  });
 }
 
 function togglePinState() {
@@ -1528,15 +1639,25 @@ function boot() {
   });
   nativeBatteryRuntime.setPreferredBinding(settings.preferredHidDevice);
   nativeBatteryRuntime.setOverlayVisible(isOverlayVisible());
+  registerPowerMonitor();
   registerIpc();
   createOverlayWindow();
   createTray();
   void nativeBatteryRuntime.refreshNow();
+  logInfo('应用启动完成', {
+    logFile: getLogFilePath(),
+    openAtLogin: Boolean(settings.openAtLogin),
+    overlayVariant: getOverlayVariant(),
+  });
   logMemorySnapshot('app-boot');
 }
 
+registerRuntimeDiagnostics();
+
 if (hasSingleInstanceLock) {
-  app.whenReady().then(boot);
+  app.whenReady().then(boot).catch((error) => {
+    relaunchAfterUnexpectedFailure('boot', error);
+  });
 }
 
 app.on('second-instance', () => {

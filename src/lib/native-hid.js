@@ -1,5 +1,7 @@
 const HID = require('node-hid');
 
+const { logInfo, logWarn } = require('./logger');
+
 const POLL_INTERVAL_VISIBLE_MS = 10 * 1000;
 const POLL_INTERVAL_HIDDEN_DEFAULT_MS = 10 * 60 * 1000;
 const POLL_INTERVAL_HIDDEN_MEDIUM_MS = 5 * 60 * 1000;
@@ -668,6 +670,7 @@ class NativeBatteryRuntime {
   }
 
   async commitSuccessfulRead(candidate, result, deviceCount) {
+    const previousSnapshot = this.lastStableSnapshot;
     const binding = normalizeDeviceBinding(candidate);
     await this.onBindingDetected(binding);
     this.preferredBinding = binding;
@@ -691,6 +694,20 @@ class NativeBatteryRuntime {
       mode: 'stable',
       grantedDevicesCount: Number.isFinite(deviceCount) ? deviceCount : this.state.grantedDevicesCount,
     });
+
+    if (
+      !previousSnapshot
+      || previousSnapshot.deviceName !== this.lastStableSnapshot.deviceName
+      || previousSnapshot.protocolName !== this.lastStableSnapshot.protocolName
+    ) {
+      logInfo('原生 HID 已建立稳定连接', {
+        deviceName: this.lastStableSnapshot.deviceName,
+        protocolName: result.protocolName,
+        batteryPercent: result.batteryPercent,
+        deviceCount,
+      });
+    }
+
     this.scheduleRefresh();
   }
 
@@ -882,6 +899,16 @@ class NativeBatteryRuntime {
       const hasDevice = Boolean(this.currentDevice);
       const isProtocolFailure = isProtocolCompatibilityFailure(error);
       this.consecutiveReadFailures += 1;
+
+      logWarn('原生 HID 轮询失败', {
+        message: error.message,
+        hasDevice,
+        deviceName: getDeviceProductName(this.currentDevice),
+        currentProtocolKey: this.currentProtocolKey,
+        consecutiveReadFailures: this.consecutiveReadFailures,
+        isProtocolFailure,
+        forceReopen,
+      });
 
       if (this.lastStableSnapshot) {
         if (hasDevice && this.consecutiveReadFailures >= PROTOCOL_RESET_FAILURE_LIMIT) {
