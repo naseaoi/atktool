@@ -13,7 +13,7 @@ const {
 
 const { getLogFilePath, logInfo, logWarn, logError } = require('./lib/logger');
 const { readSettings, writeSettings } = require('./lib/store');
-const { NativeBatteryRuntime } = require('./lib/native-hid');
+const { NativeBatteryRuntime } = require('./lib/native-hid-host');
 
 const HUB_URL = 'https://hub.atk.pro/';
 const HUB_ORIGIN = new URL(HUB_URL).origin;

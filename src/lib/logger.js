@@ -1,11 +1,27 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { app } = require('electron');
 
 const LOG_FILE_NAME = 'runtime.log';
 
-function getLogDirectory() {
+function getElectronApp() {
   try {
+    return require('electron').app;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function getLogDirectory() {
+  if (process.env.ATKTOOL_USER_DATA_DIR) {
+    return path.join(process.env.ATKTOOL_USER_DATA_DIR, 'logs');
+  }
+
+  try {
+    const app = getElectronApp();
+    if (!app) {
+      throw new Error('electron app unavailable');
+    }
+
     return path.join(app.getPath('userData'), 'logs');
   } catch (_error) {
     return path.join(process.cwd(), 'logs');
