@@ -1,26 +1,32 @@
 const { NativeBatteryRuntime } = require('./native-hid');
 const { logInfo, logError } = require('./logger');
 
+// utilityProcess 通过 process.parentPort 与主进程通信；标准 Node 子进程的
+// process.send/process.on('message') 在此环境下均不可用。
+const parentPort = process.parentPort;
+
+function postToParent(message) {
+  if (parentPort && typeof parentPort.postMessage === 'function') {
+    parentPort.postMessage(message);
+  }
+}
+
 let disposing = false;
 
 const runtime = new NativeBatteryRuntime({
   onStateChange(nextState) {
-    if (typeof process.send === 'function') {
-      process.send({
-        type: 'event',
-        event: 'state',
-        payload: nextState,
-      });
-    }
+    postToParent({
+      type: 'event',
+      event: 'state',
+      payload: nextState,
+    });
   },
   async onBindingDetected(binding) {
-    if (typeof process.send === 'function') {
-      process.send({
-        type: 'event',
-        event: 'binding',
-        payload: binding,
-      });
-    }
+    postToParent({
+      type: 'event',
+      event: 'binding',
+      payload: binding,
+    });
   },
 });
 
@@ -63,21 +69,31 @@ async function handleRequest(message) {
   return handler(message.payload);
 }
 
-process.on('message', async (message) => {
-  if (!message || message.type !== 'request') {
+parentPort?.on('message', async (event) => {
+  // utilityProcess 下 parentPort 收到的是 MessageEvent，真实负载在 event.data。
+  const message = event?.data;
+  if (!message || typeof message !== 'object') {
+    return;
+  }
+
+  // 心跳走独立通道，立即同步回复，避免被 HID IO 请求排队阻塞导致主进程误判失联。
+  if (message.type === 'ping') {
+    postToParent({ type: 'pong' });
+    return;
+  }
+
+  if (message.type !== 'request') {
     return;
   }
 
   try {
     const result = await handleRequest(message);
-    if (typeof process.send === 'function') {
-      process.send({
-        type: 'response',
-        requestId: message.requestId,
-        ok: true,
-        result,
-      });
-    }
+    postToParent({
+      type: 'response',
+      requestId: message.requestId,
+      ok: true,
+      result,
+    });
 
     if (message.command === 'dispose') {
       process.exit(0);
@@ -87,25 +103,13 @@ process.on('message', async (message) => {
       command: message.command,
       error,
     });
-    if (typeof process.send === 'function') {
-      process.send({
-        type: 'response',
-        requestId: message.requestId,
-        ok: false,
-        error: error.message,
-      });
-    }
+    postToParent({
+      type: 'response',
+      requestId: message.requestId,
+      ok: false,
+      error: error.message,
+    });
   }
-});
-
-process.on('disconnect', async () => {
-  if (disposing) {
-    return;
-  }
-
-  disposing = true;
-  await runtime.dispose();
-  process.exit(0);
 });
 
 process.on('uncaughtException', async (error) => {
@@ -128,12 +132,14 @@ process.on('unhandledRejection', async (reason) => {
   process.exit(1);
 });
 
+// utility process 没有 'disconnect' 事件：父进程消失时 Electron 会直接终止
+// 子进程，无需手动兜底，保留 disposing 标记给 dispose 命令使用即可。
+void disposing;
+
 logInfo('原生 HID 子进程已启动', {
   pid: process.pid,
 });
 
-if (typeof process.send === 'function') {
-  process.send({
-    type: 'ready',
-  });
-}
+postToParent({
+  type: 'ready',
+});

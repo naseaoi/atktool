@@ -379,12 +379,14 @@ async function sendAndReceive(handle, reportId, requestData, matcher, options = 
   throw new Error(errors.join(' | ') || '发送 HID 报告失败');
 }
 
-function isWriteReportFailure(error) {
-  return /write|sendFeatureReport|Feature Report|Output Report|could not send|could not write/i.test(error?.message || '');
-}
-
 function isProtocolCompatibilityFailure(error) {
   return /返回失败状态|无效电量|没有可用的直连协议|unsupported|not supported/i.test(error?.message || '');
+}
+
+// 协议兼容类错误以外，都视为可恢复的底层 IO 故障：读写超时、句柄失效、设备暂时离线等。
+// 这类错误走 close + reopen 一次重试，避免句柄僵死后一直沿用旧 handle。
+function isRecoverableIoFailure(error) {
+  return !isProtocolCompatibilityFailure(error);
 }
 
 const protocols = {
@@ -580,7 +582,12 @@ class NativeBatteryRuntime {
         ? this.state.batteryPercent
         : null;
 
-    if (this.state.charging || batteryPercent === null) {
+    // 充电过程中电量变化最快，用最短的后台轮询保证托盘数字能跟上真实进度。
+    if (this.state.charging) {
+      return POLL_INTERVAL_HIDDEN_LOW_MS;
+    }
+
+    if (batteryPercent === null) {
       return POLL_INTERVAL_HIDDEN_DEFAULT_MS;
     }
 
@@ -817,10 +824,13 @@ class NativeBatteryRuntime {
     try {
       return await this.readBattery(allowProtocolFallback);
     } catch (error) {
-      if (!isWriteReportFailure(error)) {
+      // 协议兼容性问题重开 handle 也没用，直接冒泡给上层按"待适配"处理。
+      if (!isRecoverableIoFailure(error)) {
         throw error;
       }
 
+      // 其他任何读写/超时/IO 故障，都先把当前 handle 彻底关闭再重建一次，
+      // 避免底层句柄僵死后持续失败只能靠用户解绑重选才能恢复。
       this.currentProtocolKey = null;
       await closeHandle(this.currentHandle);
       this.currentHandle = null;
@@ -912,7 +922,11 @@ class NativeBatteryRuntime {
 
       if (this.lastStableSnapshot) {
         if (hasDevice && this.consecutiveReadFailures >= PROTOCOL_RESET_FAILURE_LIMIT) {
+          // 连续失败达到阈值，清协议键 + 强制关闭僵死句柄，
+          // 下次 tryReadCurrentDevice 会看到没有 handle 而落入完整重扫+重开路径。
           this.currentProtocolKey = null;
+          await closeHandle(this.currentHandle);
+          this.currentHandle = null;
         }
 
         if (this.keepLastStableSnapshot()) {
@@ -922,6 +936,8 @@ class NativeBatteryRuntime {
 
       if (hasDevice && this.consecutiveReadFailures >= PROTOCOL_RESET_FAILURE_LIMIT) {
         this.currentProtocolKey = null;
+        await closeHandle(this.currentHandle);
+        this.currentHandle = null;
       }
 
       const shouldAutoRetry = hasDevice && !isProtocolFailure;

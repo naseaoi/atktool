@@ -9,6 +9,7 @@ const {
   nativeImage,
   ipcMain,
   powerMonitor,
+  session,
 } = require('electron');
 
 const { getLogFilePath, logInfo, logWarn, logError } = require('./lib/logger');
@@ -17,6 +18,9 @@ const { NativeBatteryRuntime } = require('./lib/native-hid-host');
 
 const HUB_URL = 'https://hub.atk.pro/';
 const HUB_ORIGIN = new URL(HUB_URL).origin;
+// Hub 窗口独立 partition:一来与设备管理/悬浮窗的默认 session 隔离,避免外站 cookie/storage 污染主 UI;
+// 二来窗口关闭后可精准 clearCache(),释放 hub 网页留下的 ~80-150MB Chromium 缓存。persist: 前缀保留登录态。
+const HUB_SESSION_PARTITION = 'persist:atk-hub';
 const OVERLAY_VARIANTS = {
   full: {
     width: 404,
@@ -28,7 +32,7 @@ const OVERLAY_VARIANTS = {
   },
 };
 const MANAGER_MIN_HEIGHT = 560;
-const TRAY_ICON_VERSION = 'v3';
+const TRAY_ICON_VERSION = 'v4';
 const TRAY_ICON_SIZE = 64;
 const TRAY_DIGIT_SEGMENTS = {
   0: ['a', 'b', 'c', 'd', 'e', 'f'],
@@ -275,7 +279,7 @@ function drawTrayDigit(pixels, width, height, digit, offsetX, offsetY, scale, co
   }
 }
 
-function renderTrayIconBuffer(percent = null) {
+function renderTrayIconBuffer(percent = null, charging = false) {
   const pixels = createRgbaCanvas(TRAY_ICON_SIZE, TRAY_ICON_SIZE);
   const text = Number.isFinite(percent) ? String(Math.max(0, Math.min(100, Math.round(percent)))) : '--';
   const scale = text.length >= 3 ? 1.46 : text.length === 2 ? 1.9 : 2.34;
@@ -284,6 +288,8 @@ function renderTrayIconBuffer(percent = null) {
   const totalWidth = digitWidth * text.length + gap * Math.max(0, text.length - 1);
   const startX = (TRAY_ICON_SIZE - totalWidth) / 2;
   const startY = text.length >= 3 ? 18 : 15;
+  // 充电时用亮绿色数字配合顶部充电指示条，与普通电量一眼可辨。
+  const digitColor = charging ? [120, 248, 168, 255] : [244, 251, 250, 255];
 
   // 托盘图标直接光栅化成 PNG，避免 Win11/Electron 对 SVG 托盘图的透明兼容问题。
   drawRoundedRect(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, 2, 2, 60, 60, 17, [35, 73, 84, 255]);
@@ -294,14 +300,45 @@ function renderTrayIconBuffer(percent = null) {
   text.split('').forEach((digit, index) => {
     const offsetX = startX + index * (digitWidth + gap);
     drawTrayDigit(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, digit, offsetX + 1.2, startY + 1.2, scale, [8, 18, 25, 78]);
-    drawTrayDigit(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, digit, offsetX, startY, scale, [244, 251, 250, 255]);
+    drawTrayDigit(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, digit, offsetX, startY, scale, digitColor);
   });
+
+  if (charging) {
+    // 顶部中间画一条绿色指示条，托盘缩到 16/20 像素依然能分辨充电态。
+    drawRoundedRect(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, 22, 8, 20, 4, 2, [96, 232, 146, 230]);
+  }
 
   return encodeRgbaToPng(TRAY_ICON_SIZE, TRAY_ICON_SIZE, pixels);
 }
 
-function createTrayIcon(percent = null) {
-  return nativeImage.createFromBuffer(renderTrayIconBuffer(percent));
+function createTrayIcon(percent = null, charging = false) {
+  return nativeImage.createFromBuffer(renderTrayIconBuffer(percent, charging));
+}
+
+// 托盘/任务栏图标按 (percent, charging) 哈希缓存，避免同一状态下反复渲染与磁盘 IO。
+// 任务栏角标与托盘图标使用各自的内存缓存：前者直接从 Buffer 构造 nativeImage，
+// 后者保留"首次走文件"的行为以沿用 Windows 托盘更稳定的渲染路径。
+const taskbarIconCache = new Map();
+const trayIconCache = new Map();
+
+function getTrayIconCacheKey(percent, charging) {
+  const normalizedPercent = Number.isFinite(percent)
+    ? String(Math.max(0, Math.min(100, Math.round(percent))))
+    : 'unknown';
+  return `${normalizedPercent}|${charging ? 1 : 0}`;
+}
+
+function getOrCreateTaskbarIcon(percent = null, charging = false) {
+  const key = getTrayIconCacheKey(percent, charging);
+  const cached = taskbarIconCache.get(key);
+
+  if (cached) {
+    return cached;
+  }
+
+  const icon = createTrayIcon(percent, charging);
+  taskbarIconCache.set(key, icon);
+  return icon;
 }
 
 function setActiveOverlaySource(source) {
@@ -668,8 +705,10 @@ function fitOverlayWindowHeight(contentHeight) {
 }
 
 function updateWindowTaskbarIcons() {
-  const icon = createTrayIcon(overlayState.batteryPercent);
-  const description = overlayState.batteryPercent !== null ? `当前电量 ${overlayState.batteryPercent}` : '暂无电量';
+  const icon = getOrCreateTaskbarIcon(overlayState.batteryPercent, overlayState.charging);
+  const description = overlayState.batteryPercent !== null
+    ? `当前电量 ${overlayState.batteryPercent}${overlayState.charging ? '（充电中）' : ''}`
+    : '暂无电量';
 
   if (managerWindow && !managerWindow.isDestroyed()) {
     try {
@@ -692,27 +731,41 @@ function getTrayIconDirectory() {
   return path.join(app.getPath('userData'), 'tray-icons');
 }
 
-function getTrayIconFilePath(percent = null) {
+function getTrayIconFilePath(percent = null, charging = false) {
   const text = Number.isFinite(percent) ? String(Math.max(0, Math.min(100, Math.round(percent)))) : 'unknown';
-  const filePath = path.join(getTrayIconDirectory(), `battery-${TRAY_ICON_VERSION}-${text}.png`);
+  const suffix = charging ? '-charging' : '';
+  const filePath = path.join(getTrayIconDirectory(), `battery-${TRAY_ICON_VERSION}-${text}${suffix}.png`);
 
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, renderTrayIconBuffer(percent));
+  fs.writeFileSync(filePath, renderTrayIconBuffer(percent, charging));
 
   return filePath;
 }
 
-function loadTrayIconFromFile(percent = null) {
+function loadTrayIconFromFile(percent = null, charging = false) {
+  const key = getTrayIconCacheKey(percent, charging);
+  const cached = trayIconCache.get(key);
+
+  if (cached) {
+    // 同一电量/充电状态的托盘图标已经生成过，直接复用 nativeImage，跳过写盘+读盘的同步 IO。
+    return cached;
+  }
+
   try {
-    const filePath = getTrayIconFilePath(percent);
-    return nativeImage.createFromBuffer(fs.readFileSync(filePath));
+    const filePath = getTrayIconFilePath(percent, charging);
+    const image = nativeImage.createFromBuffer(fs.readFileSync(filePath));
+    trayIconCache.set(key, image);
+    return image;
   } catch (error) {
     // 托盘图标文件写入/读取偶发失败时回退到内存图标，避免主进程被同步 IO 异常带崩。
     logWarn('托盘图标文件读取失败，回退为内存图标', {
       percent,
+      charging,
       error,
     });
-    return createTrayIcon(percent);
+    const fallback = createTrayIcon(percent, charging);
+    trayIconCache.set(key, fallback);
+    return fallback;
   }
 }
 
@@ -1026,7 +1079,6 @@ function createOverlayWindow() {
       preload: path.join(__dirname, 'preload', 'overlay-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      backgroundThrottling: false,
     },
   });
 
@@ -1134,6 +1186,7 @@ function createFallbackHubWindow() {
       preload: path.join(__dirname, 'preload', 'hub-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      partition: HUB_SESSION_PARTITION,
     },
   });
 
@@ -1184,6 +1237,16 @@ function createFallbackHubWindow() {
     fallbackHubWindow = null;
     updateTrayMenu();
     logMemorySnapshot('fallback-window-closed');
+
+    // 窗口销毁后主动清理 Hub partition 的 HTTP 缓存,把 hub.atk.pro 在磁盘/内存中占用的 Chromium
+    // 缓存(约 80-150MB)释放回系统。cookie/localStorage 仍保留在 persist 分区里,用户下次打开无需重登。
+    try {
+      void session.fromPartition(HUB_SESSION_PARTITION).clearCache().catch((error) => {
+        logWarn('同步官网电量窗口缓存清理失败', error);
+      });
+    } catch (error) {
+      logWarn('同步官网电量窗口缓存清理调度失败', error);
+    }
   });
 
   return fallbackHubWindow;
@@ -1329,7 +1392,9 @@ function updateTrayMenu() {
       enabled: false,
     },
     {
-      label: overlayState.batteryPercent !== null ? `当前电量：${overlayState.batteryPercent}%` : '当前电量：--',
+      label: overlayState.batteryPercent !== null
+        ? `当前电量：${overlayState.batteryPercent}%${overlayState.charging ? '（充电中）' : ''}`
+        : '当前电量：--',
       enabled: false,
     },
     {
@@ -1375,16 +1440,17 @@ function updateTrayMenu() {
 
   try {
     tray.setContextMenu(contextMenu);
-    tray.setImage(loadTrayIconFromFile(overlayState.batteryPercent));
+    tray.setImage(loadTrayIconFromFile(overlayState.batteryPercent, overlayState.charging));
     tray.setToolTip(
       overlayState.batteryPercent !== null
-        ? `ATK 电量 ${overlayState.batteryPercent}%`
+        ? `ATK 电量 ${overlayState.batteryPercent}%${overlayState.charging ? '（充电中）' : ''}`
         : 'ATK 电量悬浮窗'
     );
   } catch (error) {
     logError('托盘菜单刷新失败', {
       status: overlayState.status,
       batteryPercent: overlayState.batteryPercent,
+      charging: overlayState.charging,
       error,
     });
   }
