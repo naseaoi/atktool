@@ -1,5 +1,5 @@
 const { NativeBatteryRuntime } = require('./native-hid');
-const { logInfo, logError } = require('./logger');
+const { logInfo, logError } = require('../utils/logger');
 
 // utilityProcess 通过 process.parentPort 与主进程通信；标准 Node 子进程的
 // process.send/process.on('message') 在此环境下均不可用。

@@ -18,6 +18,7 @@ function getDefaultSettings() {
     alwaysOnTop: true,
     openAtLogin: false,
     overlayVariant: 'full',
+    overlayVisible: true,
   };
 }
 

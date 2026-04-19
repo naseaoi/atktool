@@ -1,7 +1,7 @@
 const path = require('node:path');
 const { app, utilityProcess } = require('electron');
 
-const { logInfo, logWarn, logError } = require('./logger');
+const { logInfo, logWarn, logError } = require('../utils/logger');
 
 const WORKER_BOOT_TIMEOUT_MS = 15 * 1000;
 const WORKER_RESTART_BASE_DELAY_MS = 1000;

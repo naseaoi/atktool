@@ -1,3 +1,14 @@
 node_modules/
 dist/
 .claude/
+
+# 日志
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Windows 系统文件
+Thumbs.db
+Desktop.ini

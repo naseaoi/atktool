@@ -1,6 +1,6 @@
 const HID = require('node-hid');
 
-const { logInfo, logWarn } = require('./logger');
+const { logInfo, logWarn } = require('../utils/logger');
 
 const POLL_INTERVAL_VISIBLE_MS = 10 * 1000;
 const POLL_INTERVAL_HIDDEN_DEFAULT_MS = 10 * 60 * 1000;
