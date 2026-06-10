@@ -15,6 +15,50 @@ const runtimeDiagnostics = require('../system/runtime-diagnostics');
 
 let tray = null;
 
+function getChargeStatus(state) {
+  if (state.chargeStatus === 'full') {
+    return 'full';
+  }
+
+  if (state.charging || state.chargeStatus === 'charging') {
+    return 'charging';
+  }
+
+  return 'idle';
+}
+
+function getChargeSuffix(state) {
+  const chargeStatus = getChargeStatus(state);
+
+  if (chargeStatus === 'full') {
+    return '（充电完成）';
+  }
+
+  if (chargeStatus === 'charging') {
+    return '（充电中）';
+  }
+
+  return '';
+}
+
+function getConnectionLabel(state) {
+  const chargeStatus = getChargeStatus(state);
+
+  if (state.status !== 'connected') {
+    return `连接状态：${overlayState.getStatusLabel(state.status)}`;
+  }
+
+  if (chargeStatus === 'full') {
+    return '连接状态：充电完成';
+  }
+
+  if (chargeStatus === 'charging') {
+    return '连接状态：充电中';
+  }
+
+  return '连接状态：已连接';
+}
+
 function buildMenuTemplate() {
   const state = overlayState.get();
   const settings = settingsStore.get();
@@ -36,12 +80,12 @@ function buildMenuTemplate() {
     },
     { type: 'separator' },
     {
-      label: state.status === 'connected' ? '连接状态：已连接' : `连接状态：${overlayState.getStatusLabel(state.status)}`,
+      label: getConnectionLabel(state),
       enabled: false,
     },
     {
       label: state.batteryPercent !== null
-        ? `当前电量：${state.batteryPercent}%${state.charging ? '（充电中）' : ''}`
+        ? `当前电量：${state.batteryPercent}%${getChargeSuffix(state)}`
         : '当前电量：--',
       enabled: false,
     },
@@ -100,7 +144,7 @@ function updateTrayMenu() {
     tray.setImage(loadTrayIconFromFile(state.batteryPercent, state.charging));
     tray.setToolTip(
       state.batteryPercent !== null
-        ? `ATK 电量 ${state.batteryPercent}%${state.charging ? '（充电中）' : ''}`
+        ? `ATK 电量 ${state.batteryPercent}%${getChargeSuffix(state)}`
         : 'ATK 电量悬浮窗'
     );
   } catch (error) {

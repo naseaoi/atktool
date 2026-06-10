@@ -308,6 +308,7 @@ class NativeBatteryRuntime {
       if (!this.runtimeSuspended) {
         await this.sendCommand('refreshNow', {
           forceReopen: true,
+          scanDevices: true,
         });
       }
     } catch (error) {
@@ -410,6 +411,15 @@ class NativeBatteryRuntime {
 
   async refreshNow(options = {}) {
     return this.sendCommand('refreshNow', options);
+  }
+
+  async refreshAfterDeviceChange() {
+    if (this.disposed || this.runtimeSuspended || !this.preferredBinding) {
+      return false;
+    }
+
+    await this.refreshNow({ forceReopen: true, scanDevices: true });
+    return true;
   }
 
   async dispose() {

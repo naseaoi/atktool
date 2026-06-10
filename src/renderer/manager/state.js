@@ -11,6 +11,7 @@ let state = {
   batteryText: '--',
   deviceName: '',
   charging: false,
+  chargeStatus: 'idle',
   needsUserAction: true,
   sampledAt: null,
   protocolName: '',
@@ -104,6 +105,32 @@ function resolveDisplayDeviceName(name) {
   return '';
 }
 
+function getChargeStatus(nextState) {
+  if (nextState.chargeStatus === 'full') {
+    return 'full';
+  }
+
+  if (nextState.charging || nextState.chargeStatus === 'charging') {
+    return 'charging';
+  }
+
+  return 'idle';
+}
+
+function getChargeText(nextState) {
+  const chargeStatus = getChargeStatus(nextState);
+
+  if (chargeStatus === 'full') {
+    return '充电完成';
+  }
+
+  if (chargeStatus === 'charging') {
+    return '充电中';
+  }
+
+  return nextState.batteryPercent === null ? '--' : '未充电';
+}
+
 export function applyPreferences(patch) {
   const hasPreferredDevicePatch = Object.prototype.hasOwnProperty.call(patch, 'preferredHidDevice');
 
@@ -155,7 +182,7 @@ export function applyState(patch) {
   dom.protocolTextEl.textContent = state.protocolName || '--';
   dom.updatedAtEl.textContent = formatTime(state.sampledAt);
   dom.grantedCountEl.textContent = String(state.grantedDevicesCount ?? 0);
-  dom.chargingTextEl.textContent = state.charging ? '充电中' : state.batteryPercent === null ? '--' : '未充电';
+  dom.chargingTextEl.textContent = getChargeText(state);
 
   scheduleFitHeight();
 }
@@ -168,6 +195,7 @@ export function showWaitingForBinding(message) {
     batteryText: '--',
     deviceName: '',
     charging: false,
+    chargeStatus: 'idle',
     needsUserAction: true,
     sampledAt: new Date().toISOString(),
     protocolName: '',

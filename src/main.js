@@ -17,6 +17,7 @@ const ipc = require('./ipc');
 
 const loginItem = require('./system/login-item');
 const powerMonitorSystem = require('./system/power-monitor');
+const deviceChangeMonitor = require('./system/device-change-monitor');
 const runtimeDiagnostics = require('./system/runtime-diagnostics');
 
 const { logMemorySnapshot } = require('./utils/memory-log');
@@ -77,6 +78,7 @@ function boot() {
 
   createBatteryRuntime();
 
+  deviceChangeMonitor.register();
   powerMonitorSystem.register();
   ipc.register();
 

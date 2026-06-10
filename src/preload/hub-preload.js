@@ -92,14 +92,18 @@ function collectState() {
   const bestCandidate = percentCandidates[0] || null;
   const deviceName = pickDeviceName(bestCandidate?.contextText || lines);
   const hasConnectPrompt = lines.includes('请连接设备') || lines.includes('新增设备');
-  const charging = /充电|charging/i.test(bodyText);
+  const full = /full|已充满|充满|充电完成|fully charged/i.test(bodyText);
+  const charging = /充电|charging/i.test(bodyText) && !full;
+  const batteryPercent = bestCandidate ? (full && bestCandidate.value >= 95 ? 100 : bestCandidate.value) : null;
+  const batteryText = batteryPercent === null ? '--' : `${batteryPercent}%`;
+  const chargeStatus = full && batteryPercent !== null ? 'full' : charging ? 'charging' : 'idle';
 
   let status = 'loading';
   let message = '正在加载 ATK HUB...';
 
   if (bestCandidate) {
     status = 'connected';
-    message = charging ? '设备已连接，当前正在充电' : '设备已连接，正在读取电量';
+    message = chargeStatus === 'full' ? '设备已连接，当前已充满' : charging ? '设备已连接，当前正在充电' : '设备已连接，正在读取电量';
   } else if (hasConnectPrompt) {
     status = 'waiting';
     message = '需要在连接页里点击“新增设备”并授权';
@@ -111,10 +115,11 @@ function collectState() {
   return {
     status,
     message,
-    batteryPercent: bestCandidate ? bestCandidate.value : null,
-    batteryText: bestCandidate ? bestCandidate.text : '--',
+    batteryPercent,
+    batteryText,
     deviceName,
     charging,
+    chargeStatus,
     pageTitle: document.title,
     percentCandidates,
     needsUserAction: status === 'waiting',

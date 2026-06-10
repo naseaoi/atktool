@@ -41,6 +41,7 @@ let state = {
   batteryText: '--',
   deviceName: '',
   charging: false,
+  chargeStatus: 'idle',
   needsUserAction: true,
   sampledAt: null,
   protocolName: '',
@@ -114,14 +115,52 @@ function get() {
   return state;
 }
 
+function normalizeChargeStatus(value) {
+  if (value === 'charging' || value === 'full') {
+    return value;
+  }
+
+  return 'idle';
+}
+
 function merge(patch) {
+  const hasChargeStatus = Object.prototype.hasOwnProperty.call(patch, 'chargeStatus');
+  const hasCharging = Object.prototype.hasOwnProperty.call(patch, 'charging');
+  let chargeStatus = normalizeChargeStatus(
+    hasChargeStatus
+      ? patch.chargeStatus
+      : hasCharging
+        ? (patch.charging ? 'charging' : 'idle')
+        : state.chargeStatus
+  );
+  const hasBatteryPercent = Object.prototype.hasOwnProperty.call(patch, 'batteryPercent');
+  let batteryPercent = hasBatteryPercent ? patch.batteryPercent : state.batteryPercent;
+
+  if (chargeStatus === 'full' && Number.isFinite(batteryPercent) && batteryPercent >= 95) {
+    batteryPercent = 100;
+  }
+
+  if (
+    chargeStatus === 'charging'
+    && Number.isFinite(batteryPercent)
+    && batteryPercent >= 95
+    && state.batteryPercent === 100
+  ) {
+    chargeStatus = 'full';
+    batteryPercent = 100;
+  }
+
   const nextDeviceName = resolveOverlayDeviceName(patch.deviceName ?? state.deviceName);
   const didUpdateDisplayDeviceName = rememberDisplayDeviceName(nextDeviceName);
 
   state = {
     ...state,
     ...patch,
+    batteryPercent,
+    batteryText: Number.isFinite(batteryPercent) ? `${batteryPercent}%` : patch.batteryText ?? state.batteryText,
     deviceName: nextDeviceName,
+    charging: chargeStatus === 'charging',
+    chargeStatus,
     alwaysOnTop: settingsStore.get().alwaysOnTop,
     overlayVariant: getOverlayVariant(),
   };

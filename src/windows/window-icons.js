@@ -7,10 +7,16 @@ const overlayState = require('../core/overlay-state');
 
 function buildTaskbarIcon() {
   const state = overlayState.get();
+  const chargeSuffix = state.chargeStatus === 'full'
+    ? '（充电完成）'
+    : state.charging
+      ? '（充电中）'
+      : '';
+
   return {
     icon: getOrCreateTaskbarIcon(state.batteryPercent, state.charging),
     description: state.batteryPercent !== null
-      ? `当前电量 ${state.batteryPercent}${state.charging ? '（充电中）' : ''}`
+      ? `当前电量 ${state.batteryPercent}${chargeSuffix}`
       : '暂无电量',
   };
 }

@@ -48,6 +48,15 @@ function register() {
       return false;
     }
     rememberPreferredDevice(binding);
+    overlayState.merge({
+      deviceName: binding.productName || '',
+      batteryPercent: null,
+      batteryText: '--',
+      charging: false,
+      chargeStatus: 'idle',
+      protocolName: '',
+      sampledAt: new Date().toISOString(),
+    });
     hidSelection.clear();
     managerWindow.refresh();
     return true;

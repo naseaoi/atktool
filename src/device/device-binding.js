@@ -100,13 +100,17 @@ function hasRememberedDeviceBinding() {
 function getBoundDisplayDeviceName(device = settingsStore.get().preferredHidDevice) {
   const settings = settingsStore.get();
   const savedName = normalizeDeviceName(settings.displayDeviceName);
-  const binding = settings.displayDeviceNameBinding || settings.preferredHidDevice;
+  const binding = settings.displayDeviceNameBinding;
 
   if (!savedName || isGenericDeviceName(savedName)) {
     return '';
   }
 
-  // 兼容旧版本只记录宽松绑定的情况；若当前还是同一类 HID 接口，则继续复用已识别的型号名。
+  if (!binding) {
+    return '';
+  }
+
+  // 展示名只复用到明确匹配的 HID 绑定。
   if (!getDeviceBindingMatchLevel(binding, device)) {
     return '';
   }

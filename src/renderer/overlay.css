@@ -256,6 +256,7 @@ h1 {
   transition: width 0.24s ease, background 0.24s ease, box-shadow 0.24s ease;
 }
 
+body[data-battery-round-end='true'] .battery-visual__fill,
 body[data-battery-full='true'] .battery-visual__fill {
   border-radius: 14px;
 }

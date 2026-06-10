@@ -31,7 +31,27 @@ function formatTime(isoTime) {
   }).format(date);
 }
 
-function getStatusLabel(status) {
+function getChargeStatus(state) {
+  if (state?.chargeStatus === 'full') {
+    return 'full';
+  }
+
+  if (state?.charging || state?.chargeStatus === 'charging') {
+    return 'charging';
+  }
+
+  return 'idle';
+}
+
+function getStatusLabel(status, chargeStatus) {
+  if (status === 'connected' && chargeStatus === 'full') {
+    return '充电完成';
+  }
+
+  if (status === 'connected' && chargeStatus === 'charging') {
+    return '充电中';
+  }
+
   switch (status) {
     case 'connected':
       return '已连接';
@@ -54,8 +74,8 @@ function normalizeBatteryPercent(value) {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function getBatteryTone(percent, charging) {
-  if (charging) {
+function getBatteryTone(percent, chargeStatus) {
+  if (chargeStatus === 'charging') {
     return 'charging';
   }
 
@@ -114,15 +134,17 @@ function scheduleFitHeight() {
 function renderState(state) {
   const nextSampledAt = state.sampledAt || '';
   const batteryPercent = normalizeBatteryPercent(state.batteryPercent);
+  const chargeStatus = getChargeStatus(state);
 
   document.body.dataset.status = state.status || 'loading';
   document.body.dataset.variant = state.overlayVariant || 'full';
-  document.body.dataset.batteryTone = getBatteryTone(batteryPercent, state.charging);
-  document.body.dataset.batteryFull = batteryPercent === 100 ? 'true' : 'false';
+  document.body.dataset.batteryTone = getBatteryTone(batteryPercent, chargeStatus);
+  document.body.dataset.batteryFull = batteryPercent === 100 || chargeStatus === 'full' ? 'true' : 'false';
+  document.body.dataset.batteryRoundEnd = batteryPercent !== null && batteryPercent >= 86 ? 'true' : 'false';
   deviceNameEl.textContent = state.deviceName || '等待连接';
   deviceNameEl.title = state.deviceName || '';
   batteryTextEl.textContent = state.batteryText || '--';
-  statusTextEl.textContent = getStatusLabel(state.status);
+  statusTextEl.textContent = getStatusLabel(state.status, chargeStatus);
   updatedAtEl.textContent = formatTime(state.sampledAt);
   messageTextEl.textContent = state.message || '正在准备页面...';
   panelShellEl.style.setProperty('--battery-level', String(batteryPercent ?? 0));

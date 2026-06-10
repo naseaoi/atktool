@@ -10,7 +10,7 @@ function register() {
 
   powerMonitor.on('resume', () => {
     logInfo('系统恢复运行，触发 HID 重连刷新');
-    void batteryRuntime.get()?.refreshNow({ forceReopen: true });
+    void batteryRuntime.get()?.refreshNow({ forceReopen: true, scanDevices: true });
   });
 }
 

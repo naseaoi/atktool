@@ -179,7 +179,7 @@ function refresh() {
     mode: 'stable',
   });
 
-  void batteryRuntime.get()?.refreshNow({ forceReopen: true });
+  void batteryRuntime.get()?.refreshNow({ forceReopen: true, scanDevices: true });
 }
 
 function on(event, listener) {

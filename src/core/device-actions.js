@@ -30,10 +30,9 @@ function rememberPreferredDevice(device) {
   if (!isGenericDeviceName(normalized.productName)) {
     patch.displayDeviceName = normalized.productName;
     patch.displayDeviceNameBinding = normalized;
-  } else if (currentKey !== nextKey || currentDisplayBindingKey !== nextKey) {
-    // 换了个设备又拿不到干净名称,就把遗留的 displayName 清掉,避免把旧名套在新设备上。
+  } else if (currentKey !== nextKey || currentDisplayBindingKey !== nextKey || settings.displayDeviceName) {
     patch.displayDeviceName = '';
-    patch.displayDeviceNameBinding = null;
+    patch.displayDeviceNameBinding = normalized;
   }
 
   settingsStore.update(patch);
@@ -54,6 +53,7 @@ function clearPreferredDeviceBinding() {
       batteryText: '--',
       deviceName: '',
       charging: false,
+      chargeStatus: 'idle',
       needsUserAction: true,
       sampledAt: new Date().toISOString(),
       protocolName: '',

@@ -6,12 +6,21 @@ const POLL_INTERVAL_VISIBLE_MS = 10 * 1000;
 const POLL_INTERVAL_HIDDEN_DEFAULT_MS = 10 * 60 * 1000;
 const POLL_INTERVAL_HIDDEN_MEDIUM_MS = 5 * 60 * 1000;
 const POLL_INTERVAL_HIDDEN_LOW_MS = 2 * 60 * 1000;
+const DEVICE_CHANGE_WATCH_INTERVAL_MS = 750;
 const RETRY_INTERVAL_MS = 5000;
 const PROTOCOL_RESET_FAILURE_LIMIT = 3;
+const HID_READ_TIMEOUT_MS = 3000;
+const HID_FAST_READ_TIMEOUT_MS = 220;
 const COMPX_REPORT_ID = 8;
 const HECHI_REPORT_ID = 11;
 const COMPX_PROTOCOL_LABEL = 'COMPX 直连';
 const HECHI_PROTOCOL_LABEL = 'HECHI 直连';
+const CHARGE_STATUS_IDLE = 'idle';
+const CHARGE_STATUS_CHARGING = 'charging';
+const CHARGE_STATUS_FULL = 'full';
+const CHARGE_FLAG_CHARGING = 1;
+const CHARGE_FLAG_FULL = 2;
+const WIRED_FULL_SENTINEL_PERCENT = 95;
 
 function normalizeDeviceName(name) {
   return typeof name === 'string' ? name.trim() : '';
@@ -82,6 +91,20 @@ function getDeviceBindingMatchLevel(left, right) {
   return 0;
 }
 
+function isSameVendorDevice(device, preferredBinding = null) {
+  return Number.isFinite(device?.vendorId)
+    && Number.isFinite(preferredBinding?.vendorId)
+    && device.vendorId === preferredBinding.vendorId;
+}
+
+function isAutoSwitchCandidate(device, preferredBinding = null) {
+  if (getDeviceBindingMatchLevel(device, preferredBinding) > 0) {
+    return true;
+  }
+
+  return isSameVendorDevice(device, preferredBinding);
+}
+
 function isGenericDeviceName(name) {
   const normalized = normalizeDeviceName(name);
   if (!normalized) {
@@ -145,6 +168,10 @@ function getDeviceMatchScore(device, preferredBinding = null) {
     score += 18;
   } else if (hasKeyboardUsage) {
     score -= 10;
+  }
+
+  if (Number.isFinite(device?.interface) && device.interface > 0) {
+    score += device.interface * 2;
   }
 
   score += getDeviceBindingMatchLevel(device, preferredBinding) * 120;
@@ -351,18 +378,16 @@ async function readUntilMatch(handle, reportId, matcher, timeoutMs) {
 }
 
 async function sendAndReceive(handle, reportId, requestData, matcher, options = {}) {
-  const { featureLength = 0, timeoutMs = 3000 } = options;
+  const { featureLength = 0, timeoutMs = HID_READ_TIMEOUT_MS, featureFirst = false } = options;
   const requestPayload = [reportId, ...Array.from(requestData)];
   const errors = [];
 
-  try {
+  const readByOutputReport = async () => {
     await handle.write(requestPayload);
-    return await readUntilMatch(handle, reportId, matcher, timeoutMs);
-  } catch (error) {
-    errors.push(`Output Report: ${error.message}`);
-  }
+    return readUntilMatch(handle, reportId, matcher, timeoutMs);
+  };
 
-  try {
+  const readByFeatureReport = async () => {
     await handle.sendFeatureReport(requestPayload);
     const response = await handle.getFeatureReport(reportId, featureLength || requestPayload.length + 1);
     const data = normalizeInputBuffer(Buffer.from(response), reportId);
@@ -372,8 +397,24 @@ async function sendAndReceive(handle, reportId, requestData, matcher, options = 
     }
 
     return data;
-  } catch (error) {
-    errors.push(`Feature Report: ${error.message}`);
+  };
+
+  const readers = featureFirst
+    ? [
+      ['Feature Report', readByFeatureReport],
+      ['Output Report', readByOutputReport],
+    ]
+    : [
+      ['Output Report', readByOutputReport],
+      ['Feature Report', readByFeatureReport],
+    ];
+
+  for (const [label, reader] of readers) {
+    try {
+      return await reader();
+    } catch (error) {
+      errors.push(`${label}: ${error.message}`);
+    }
   }
 
   throw new Error(errors.join(' | ') || '发送 HID 报告失败');
@@ -381,6 +422,73 @@ async function sendAndReceive(handle, reportId, requestData, matcher, options = 
 
 function isProtocolCompatibilityFailure(error) {
   return /返回失败状态|无效电量|没有可用的直连协议|unsupported|not supported/i.test(error?.message || '');
+}
+
+function normalizeBatteryPercentValue(value) {
+  const batteryPercent = Number(value);
+
+  if (!Number.isFinite(batteryPercent) || batteryPercent < 0 || batteryPercent > 100) {
+    return null;
+  }
+
+  return Math.round(batteryPercent);
+}
+
+function normalizeChargeState(rawBatteryPercent, rawChargingFlag) {
+  const batteryPercent = normalizeBatteryPercentValue(rawBatteryPercent);
+  const chargingFlag = Number.isFinite(rawChargingFlag) ? rawChargingFlag : 0;
+
+  if (batteryPercent === null) {
+    return null;
+  }
+
+  const hasChargeFlag = chargingFlag > 0;
+  const charging = hasChargeFlag;
+  const completed = (chargingFlag & CHARGE_FLAG_FULL) === CHARGE_FLAG_FULL
+    || (hasChargeFlag && batteryPercent >= WIRED_FULL_SENTINEL_PERCENT);
+
+  if (completed) {
+    return {
+      batteryPercent: 100,
+      charging: false,
+      chargeStatus: CHARGE_STATUS_FULL,
+    };
+  }
+
+  if (charging) {
+    return {
+      batteryPercent,
+      charging: true,
+      chargeStatus: CHARGE_STATUS_CHARGING,
+    };
+  }
+
+  return {
+    batteryPercent,
+    charging: false,
+    chargeStatus: CHARGE_STATUS_IDLE,
+  };
+}
+
+function normalizeReadResult(result, previousSnapshot = null) {
+  if (!result || !Number.isFinite(result.batteryPercent)) {
+    return result;
+  }
+
+  if (
+    result.charging
+    && result.batteryPercent >= WIRED_FULL_SENTINEL_PERCENT
+    && previousSnapshot?.batteryPercent === 100
+  ) {
+    return {
+      ...result,
+      batteryPercent: 100,
+      charging: false,
+      chargeStatus: CHARGE_STATUS_FULL,
+    };
+  }
+
+  return result;
 }
 
 // 协议兼容类错误以外，都视为可恢复的底层 IO 故障：读写超时、句柄失效、设备暂时离线等。
@@ -392,65 +500,125 @@ function isRecoverableIoFailure(error) {
 const protocols = {
   compx: {
     label: COMPX_PROTOCOL_LABEL,
-    async read(handle) {
+    async read(handle, options = {}) {
+      const fast = Boolean(options.fast);
       const response = await sendAndReceive(
         handle,
         COMPX_REPORT_ID,
         buildCompxBatteryRequest(),
         (data) => data.length >= 7 && data[0] === 4,
-        { featureLength: 18 }
+        {
+          featureLength: 18,
+          featureFirst: fast,
+          timeoutMs: fast ? HID_FAST_READ_TIMEOUT_MS : HID_READ_TIMEOUT_MS,
+        }
       );
 
       const commandStatus = response[1];
-      const batteryPercent = Math.min(response[5], 100);
-      const chargingFlag = response[6];
+      const batteryState = normalizeChargeState(response[5], response[6]);
 
       if (commandStatus === 255) {
         throw new Error('COMPX 返回失败状态');
       }
 
-      if (!Number.isFinite(batteryPercent) || batteryPercent < 0 || batteryPercent > 100) {
+      if (!batteryState) {
         throw new Error('COMPX 返回了无效电量');
       }
 
       return {
-        batteryPercent,
-        charging: chargingFlag === 1,
+        ...batteryState,
         protocolName: this.label,
       };
     },
   },
   hechi: {
     label: HECHI_PROTOCOL_LABEL,
-    async read(handle) {
+    async read(handle, options = {}) {
+      const fast = Boolean(options.fast);
       const response = await sendAndReceive(
         handle,
         HECHI_REPORT_ID,
         buildHechiMouseInfoRequest(),
         (data) => data.length >= 18 && data[0] === 19,
-        { featureLength: 65 }
+        {
+          featureLength: 65,
+          featureFirst: fast,
+          timeoutMs: fast ? HID_FAST_READ_TIMEOUT_MS : HID_READ_TIMEOUT_MS,
+        }
       );
 
       const resultCode = response[2];
       const chargingFlag = response[16];
-      const batteryPercent = Math.min(response[17], 100);
+      const batteryState = normalizeChargeState(response[17], chargingFlag);
 
       if (resultCode === 255) {
         throw new Error('HECHI 返回失败状态');
       }
 
-      if (!Number.isFinite(batteryPercent) || batteryPercent < 0 || batteryPercent > 100) {
+      if (!batteryState) {
         throw new Error('HECHI 返回了无效电量');
       }
 
       return {
-        batteryPercent,
-        charging: chargingFlag === 1,
+        ...batteryState,
         protocolName: this.label,
       };
     },
   },
 };
+
+let deviceChangeWatcher = null;
+let deviceChangeWatcherRunning = false;
+
+function startDeviceChangeWatcher(runtime) {
+  if (deviceChangeWatcher) {
+    return;
+  }
+
+  deviceChangeWatcher = setInterval(async () => {
+    if (!runtime || runtime.runtimeSuspended || !runtime.hasBoundDevice()) {
+      return;
+    }
+
+    if (deviceChangeWatcherRunning) {
+      return;
+    }
+
+    deviceChangeWatcherRunning = true;
+
+    try {
+      const currentDevices = await listNativeDevices();
+      const currentPaths = new Set(currentDevices.map((device) => device.path));
+
+      if (!runtime._lastDevicePaths) {
+        runtime._lastDevicePaths = currentPaths;
+        return;
+      }
+
+      const hasChanges = currentPaths.size !== runtime._lastDevicePaths.size
+        || [...currentPaths].some((devicePath) => !runtime._lastDevicePaths.has(devicePath));
+
+      if (hasChanges) {
+        runtime._lastDevicePaths = currentPaths;
+        await runtime.refreshNow({ forceReopen: true, scanDevices: true });
+      }
+    } catch (error) {
+      logWarn('HID 设备变化轮询失败', error);
+    } finally {
+      deviceChangeWatcherRunning = false;
+    }
+  }, DEVICE_CHANGE_WATCH_INTERVAL_MS);
+
+  deviceChangeWatcher.unref?.();
+}
+
+function stopDeviceChangeWatcher() {
+  if (deviceChangeWatcher) {
+    clearInterval(deviceChangeWatcher);
+    deviceChangeWatcher = null;
+  }
+  deviceChangeWatcherRunning = false;
+}
 
 class NativeBatteryRuntime {
   constructor(options = {}) {
@@ -465,6 +633,7 @@ class NativeBatteryRuntime {
     this.lastStableSnapshot = null;
     this.pollTimer = null;
     this.refreshNonce = 0;
+    this._lastDevicePaths = null;
     this.state = {
       status: 'loading',
       message: '正在准备原生 HID 直连器...',
@@ -472,6 +641,7 @@ class NativeBatteryRuntime {
       batteryText: '--',
       deviceName: '',
       charging: false,
+      chargeStatus: CHARGE_STATUS_IDLE,
       needsUserAction: true,
       sampledAt: null,
       protocolName: '',
@@ -480,6 +650,7 @@ class NativeBatteryRuntime {
     };
     this.onStateChange = typeof options.onStateChange === 'function' ? options.onStateChange : () => {};
     this.onBindingDetected = typeof options.onBindingDetected === 'function' ? options.onBindingDetected : async () => {};
+    startDeviceChangeWatcher(this);
   }
 
   emitState(patch) {
@@ -557,7 +728,7 @@ class NativeBatteryRuntime {
     }
 
     if (this.hasBoundDevice()) {
-      void this.refreshNow({ forceReopen: true });
+      void this.refreshNow({ forceReopen: true, scanDevices: true });
       return;
     }
 
@@ -631,6 +802,7 @@ class NativeBatteryRuntime {
       batteryText: '--',
       deviceName: '',
       charging: false,
+      chargeStatus: CHARGE_STATUS_IDLE,
       needsUserAction: true,
       sampledAt: new Date().toISOString(),
       protocolName: '',
@@ -639,21 +811,40 @@ class NativeBatteryRuntime {
     });
   }
 
-  getCandidateDevices(devices) {
+  getCandidateDevices(devices, options = {}) {
+    const { preferNewDevice = false } = options;
     const exactMatches = devices.filter((device) => getDeviceBindingMatchLevel(device, this.preferredBinding) === 2);
     const looseMatches = devices.filter((device) => getDeviceBindingMatchLevel(device, this.preferredBinding) === 1);
-    const restDevices = devices.filter((device) => getDeviceBindingMatchLevel(device, this.preferredBinding) === 0);
+    const vendorMatches = devices.filter((device) => (
+      getDeviceBindingMatchLevel(device, this.preferredBinding) === 0
+      && isSameVendorDevice(device, this.preferredBinding)
+    ));
     const sortByScore = (list) => [...list].sort((left, right) => getDeviceMatchScore(right, this.preferredBinding) - getDeviceMatchScore(left, this.preferredBinding));
+    const prioritizeNewDevice = (list) => {
+      if (!preferNewDevice || !this.currentDevice?.deviceId) {
+        return list;
+      }
+
+      return [
+        ...list.filter((device) => device.deviceId !== this.currentDevice.deviceId),
+        ...list.filter((device) => device.deviceId === this.currentDevice.deviceId),
+      ];
+    };
+
+    let candidates = [];
 
     if (exactMatches.length > 0) {
-      return [...sortByScore(exactMatches), ...sortByScore(looseMatches)];
+      candidates = [...sortByScore(exactMatches), ...sortByScore(looseMatches), ...sortByScore(vendorMatches)];
+      return prioritizeNewDevice(candidates);
     }
 
     if (looseMatches.length > 0) {
-      return [...sortByScore(looseMatches), ...sortByScore(restDevices)];
+      candidates = [...sortByScore(looseMatches), ...sortByScore(vendorMatches)];
+      return prioritizeNewDevice(candidates);
     }
 
-    return sortByScore(restDevices);
+    candidates = sortByScore(vendorMatches);
+    return prioritizeNewDevice(candidates);
   }
 
   async listChooserDevices() {
@@ -678,17 +869,23 @@ class NativeBatteryRuntime {
 
   async commitSuccessfulRead(candidate, result, deviceCount) {
     const previousSnapshot = this.lastStableSnapshot;
+    const normalizedResult = normalizeReadResult(result, previousSnapshot);
     const binding = normalizeDeviceBinding(candidate);
+    if (this.hasBoundDevice() && !isAutoSwitchCandidate(candidate, this.preferredBinding)) {
+      throw new Error(`候选设备与当前绑定不匹配：VID ${candidate.vendorId}`);
+    }
+
     await this.onBindingDetected(binding);
     this.preferredBinding = binding;
     this.consecutiveReadFailures = 0;
     this.lastStableSnapshot = {
-      batteryPercent: result.batteryPercent,
-      batteryText: `${result.batteryPercent}%`,
-      charging: result.charging,
+      batteryPercent: normalizedResult.batteryPercent,
+      batteryText: `${normalizedResult.batteryPercent}%`,
+      charging: normalizedResult.charging,
+      chargeStatus: normalizedResult.chargeStatus || (normalizedResult.charging ? CHARGE_STATUS_CHARGING : CHARGE_STATUS_IDLE),
       deviceName: getDeviceProductName(candidate) || 'ATK 设备',
       sampledAt: new Date().toISOString(),
-      protocolName: result.protocolName,
+      protocolName: normalizedResult.protocolName,
     };
 
     this.emitState({
@@ -709,8 +906,8 @@ class NativeBatteryRuntime {
     ) {
       logInfo('原生 HID 已建立稳定连接', {
         deviceName: this.lastStableSnapshot.deviceName,
-        protocolName: result.protocolName,
-        batteryPercent: result.batteryPercent,
+        protocolName: normalizedResult.protocolName,
+        batteryPercent: normalizedResult.batteryPercent,
         deviceCount,
       });
     }
@@ -720,6 +917,15 @@ class NativeBatteryRuntime {
 
   async tryReadCurrentDevice(nonce, forceReopen = false) {
     if (!this.currentDevice || (!this.currentHandle && !forceReopen)) {
+      return false;
+    }
+
+    if (this.hasBoundDevice() && !isAutoSwitchCandidate(this.currentDevice, this.preferredBinding)) {
+      await closeHandle(this.currentHandle);
+      this.currentHandle = null;
+      this.currentDevice = null;
+      this.currentDeviceKey = '';
+      this.currentProtocolKey = null;
       return false;
     }
 
@@ -804,12 +1010,12 @@ class NativeBatteryRuntime {
     ];
   }
 
-  async readBattery(allowProtocolFallback = false) {
+  async readBattery(allowProtocolFallback = false, options = {}) {
     const errors = [];
 
     for (const [key, protocol] of this.getProtocolEntries(allowProtocolFallback)) {
       try {
-        const result = await protocol.read(this.currentHandle);
+        const result = await protocol.read(this.currentHandle, options);
         this.currentProtocolKey = key;
         return result;
       } catch (error) {
@@ -820,9 +1026,9 @@ class NativeBatteryRuntime {
     throw new Error(errors.join(' | ') || '没有可用的直连协议');
   }
 
-  async readBatteryWithRecovery(allowProtocolFallback = false) {
+  async readBatteryWithRecovery(allowProtocolFallback = false, options = {}) {
     try {
-      return await this.readBattery(allowProtocolFallback);
+      return await this.readBattery(allowProtocolFallback, options);
     } catch (error) {
       // 协议兼容性问题重开 handle 也没用，直接冒泡给上层按"待适配"处理。
       if (!isRecoverableIoFailure(error)) {
@@ -837,12 +1043,12 @@ class NativeBatteryRuntime {
       await new Promise((resolve) => setTimeout(resolve, 260));
       await this.openDevice(this.currentDevice, true);
       await new Promise((resolve) => setTimeout(resolve, 120));
-      return this.readBattery(true);
+      return this.readBattery(true, options);
     }
   }
 
   async refreshNow(options = {}) {
-    const { forceReopen = false } = options;
+    const { forceReopen = false, scanDevices = false } = options;
     const nonce = ++this.refreshNonce;
     this.clearPollTimer();
 
@@ -853,7 +1059,7 @@ class NativeBatteryRuntime {
         return;
       }
 
-      if (await this.tryReadCurrentDevice(nonce, forceReopen)) {
+      if (!scanDevices && await this.tryReadCurrentDevice(nonce, forceReopen)) {
         return;
       }
 
@@ -866,7 +1072,7 @@ class NativeBatteryRuntime {
         grantedDevicesCount: devices.length,
       });
 
-      const candidates = this.getCandidateDevices(devices);
+      const candidates = this.getCandidateDevices(devices, { preferNewDevice: scanDevices });
       if (candidates.length === 0) {
         await this.resetCurrentDevice();
         this.showWaitingForBinding('当前绑定设备未接入，请连接后刷新，或改为更换绑定设备。');
@@ -883,7 +1089,7 @@ class NativeBatteryRuntime {
           }
 
           const allowProtocolFallback = forceReopen || !this.currentProtocolKey || this.consecutiveReadFailures >= PROTOCOL_RESET_FAILURE_LIMIT;
-          const result = await this.readBatteryWithRecovery(allowProtocolFallback);
+          const result = await this.readBatteryWithRecovery(allowProtocolFallback, { fast: scanDevices });
           if (nonce !== this.refreshNonce || this.runtimeSuspended) {
             return;
           }
@@ -949,6 +1155,7 @@ class NativeBatteryRuntime {
           batteryText: '--',
           deviceName: getDeviceProductName(this.currentDevice) || '',
           charging: false,
+          chargeStatus: CHARGE_STATUS_IDLE,
           needsUserAction: false,
           sampledAt: new Date().toISOString(),
           protocolName: '',
@@ -970,6 +1177,7 @@ class NativeBatteryRuntime {
         batteryText: this.lastStableSnapshot?.batteryText ?? '--',
         deviceName: this.lastStableSnapshot?.deviceName || getDeviceProductName(this.currentDevice) || '',
         charging: this.lastStableSnapshot?.charging ?? false,
+        chargeStatus: this.lastStableSnapshot?.chargeStatus || CHARGE_STATUS_IDLE,
         needsUserAction: !hasDevice,
         sampledAt: this.lastStableSnapshot?.sampledAt || new Date().toISOString(),
         protocolName: hasDevice ? this.lastStableSnapshot?.protocolName || (isProtocolFailure ? '待补充协议适配' : '') : '',
@@ -988,6 +1196,7 @@ class NativeBatteryRuntime {
 
   async dispose() {
     this.clearPollTimer();
+    stopDeviceChangeWatcher();
     await closeHandle(this.currentHandle);
     this.currentHandle = null;
   }
