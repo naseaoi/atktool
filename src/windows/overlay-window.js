@@ -79,7 +79,7 @@ function fitHeight(contentHeight) {
   const metrics = overlayState.getOverlayMetrics('full');
   const currentBounds = overlayWindow.getContentBounds();
   const display = screen.getDisplayMatching(currentBounds);
-  const targetHeight = Math.min(display.workArea.height, Math.max(340, Math.ceil(contentHeight)));
+  const targetHeight = Math.min(display.workArea.height, Math.max(metrics.height, Math.ceil(contentHeight)));
 
   if (Math.abs(currentBounds.height - targetHeight) <= 2) {
     return;
@@ -116,12 +116,13 @@ function create() {
     maxHeight: metrics.height,
     frame: false,
     transparent: true,
+    hasShadow: false,
     resizable: false,
     show: false,
     skipTaskbar: true,
     alwaysOnTop: settings.alwaysOnTop,
     movable: true,
-    roundedCorners: true,
+    roundedCorners: false,
     ...(storedPosition ? { x: storedPosition.x, y: storedPosition.y } : {}),
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'overlay-preload.js'),

@@ -4,6 +4,7 @@ const batteryRuntime = require('./battery-runtime');
 const {
   normalizeDeviceBinding,
   getDeviceBindingKey,
+  getBoundDisplayDeviceName,
 } = require('../device/device-binding');
 const { isGenericDeviceName } = require('../device/device-name');
 
@@ -23,6 +24,7 @@ function rememberPreferredDevice(device) {
   const currentKey = getDeviceBindingKey(settings.preferredHidDevice);
   const nextKey = getDeviceBindingKey(normalized);
   const currentDisplayBindingKey = getDeviceBindingKey(settings.displayDeviceNameBinding);
+  const matchingDisplayName = getBoundDisplayDeviceName(normalized);
   const patch = {
     preferredHidDevice: normalized,
   };
@@ -30,7 +32,7 @@ function rememberPreferredDevice(device) {
   if (!isGenericDeviceName(normalized.productName)) {
     patch.displayDeviceName = normalized.productName;
     patch.displayDeviceNameBinding = normalized;
-  } else if (currentKey !== nextKey || currentDisplayBindingKey !== nextKey || settings.displayDeviceName) {
+  } else if (!matchingDisplayName && (currentKey !== nextKey || currentDisplayBindingKey !== nextKey || settings.displayDeviceName)) {
     patch.displayDeviceName = '';
     patch.displayDeviceNameBinding = normalized;
   }

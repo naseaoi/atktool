@@ -97,11 +97,7 @@ function resolveDisplayDeviceName(name) {
     return savedName;
   }
 
-  if (normalized) {
-    return 'ATK 设备';
-  }
-
-  return '';
+  return normalized || boundName || savedName;
 }
 
 function getChargeStatus(nextState) {

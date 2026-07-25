@@ -8,8 +8,8 @@ const HUB_SESSION_PARTITION = 'persist:atk-hub';
 
 const OVERLAY_VARIANTS = {
   full: {
-    width: 404,
-    height: 392,
+    width: 360,
+    height: 262,
   },
   compact: {
     width: 80,
@@ -19,7 +19,7 @@ const OVERLAY_VARIANTS = {
 
 const MANAGER_MIN_HEIGHT = 560;
 
-const TRAY_ICON_VERSION = 'v6';
+const TRAY_ICON_VERSION = 'v7';
 const TRAY_ICON_SIZE = 70;
 const TRAY_DIGIT_SEGMENTS = {
   0: ['a', 'b', 'c', 'd', 'e', 'f'],

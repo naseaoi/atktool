@@ -4,6 +4,7 @@ const { logInfo, logWarn } = require('../utils/logger');
 const {
   normalizeDeviceName,
   getDeviceProductName,
+  getDeviceDisplayName,
   isGenericDeviceName,
 } = require('../device/device-name');
 const {
@@ -11,16 +12,16 @@ const {
   getDeviceBindingKey,
   getLooseDeviceBindingKey,
   getDeviceBindingMatchLevel,
+  isSameProductDevice,
 } = require('../device/binding-identity');
 const { summarizeErrors } = require('../utils/error-summary');
-const { mergeRefreshOptions } = require('./refresh-options');
+const { mergeRefreshOptions, getRetryDelayMs } = require('./refresh-options');
 
 const POLL_INTERVAL_VISIBLE_MS = 10 * 1000;
 const POLL_INTERVAL_HIDDEN_DEFAULT_MS = 10 * 60 * 1000;
 const POLL_INTERVAL_HIDDEN_MEDIUM_MS = 5 * 60 * 1000;
 const POLL_INTERVAL_HIDDEN_LOW_MS = 2 * 60 * 1000;
-const DEVICE_CHANGE_WATCH_INTERVAL_MS = 750;
-const RETRY_INTERVAL_MS = 5000;
+const DEVICE_CHANGE_WATCH_INTERVAL_MS = 2 * 60 * 1000;
 const PROTOCOL_RESET_FAILURE_LIMIT = 3;
 const HID_READ_TIMEOUT_MS = 3000;
 const HID_FAST_READ_TIMEOUT_MS = 220;
@@ -34,18 +35,12 @@ const CHARGE_STATUS_FULL = 'full';
 const CHARGE_FLAG_CHARGING = 1;
 const CHARGE_FLAG_FULL = 2;
 
-function isSameVendorDevice(device, preferredBinding = null) {
-  return Number.isFinite(device?.vendorId)
-    && Number.isFinite(preferredBinding?.vendorId)
-    && device.vendorId === preferredBinding.vendorId;
-}
-
 function isAutoSwitchCandidate(device, preferredBinding = null) {
   if (getDeviceBindingMatchLevel(device, preferredBinding) > 0) {
     return true;
   }
 
-  return isSameVendorDevice(device, preferredBinding);
+  return isSameProductDevice(device, preferredBinding);
 }
 
 function supportsKnownBatteryProtocolHint(device) {
@@ -372,8 +367,7 @@ function normalizeChargeState(rawBatteryPercent, rawChargingFlag) {
     return null;
   }
 
-  const completed = (chargingFlag & CHARGE_FLAG_FULL) === CHARGE_FLAG_FULL
-    || ((chargingFlag & CHARGE_FLAG_CHARGING) === 0 && batteryPercent === 100);
+  const completed = (chargingFlag & CHARGE_FLAG_FULL) === CHARGE_FLAG_FULL;
 
   if (completed) {
     return {
@@ -739,9 +733,9 @@ class NativeBatteryRuntime {
     const { preferNewDevice = false } = options;
     const exactMatches = devices.filter((device) => getDeviceBindingMatchLevel(device, this.preferredBinding) === 2);
     const looseMatches = devices.filter((device) => getDeviceBindingMatchLevel(device, this.preferredBinding) === 1);
-    const vendorMatches = devices.filter((device) => (
+    const productMatches = devices.filter((device) => (
       getDeviceBindingMatchLevel(device, this.preferredBinding) === 0
-      && isSameVendorDevice(device, this.preferredBinding)
+      && isSameProductDevice(device, this.preferredBinding)
     ));
     const sortByScore = (list) => [...list].sort((left, right) => getDeviceMatchScore(right, this.preferredBinding) - getDeviceMatchScore(left, this.preferredBinding));
     const prioritizeNewDevice = (list) => {
@@ -758,16 +752,16 @@ class NativeBatteryRuntime {
     let candidates = [];
 
     if (exactMatches.length > 0) {
-      candidates = [...sortByScore(exactMatches), ...sortByScore(looseMatches), ...sortByScore(vendorMatches)];
+      candidates = [...sortByScore(exactMatches), ...sortByScore(looseMatches), ...sortByScore(productMatches)];
       return prioritizeNewDevice(candidates);
     }
 
     if (looseMatches.length > 0) {
-      candidates = [...sortByScore(looseMatches), ...sortByScore(vendorMatches)];
+      candidates = [...sortByScore(looseMatches), ...sortByScore(productMatches)];
       return prioritizeNewDevice(candidates);
     }
 
-    candidates = sortByScore(vendorMatches);
+    candidates = sortByScore(productMatches);
     return prioritizeNewDevice(candidates);
   }
 
@@ -810,7 +804,7 @@ class NativeBatteryRuntime {
       batteryText: `${result.batteryPercent}%`,
       charging: result.charging,
       chargeStatus: result.chargeStatus || (result.charging ? CHARGE_STATUS_CHARGING : CHARGE_STATUS_IDLE),
-      deviceName: getDeviceProductName(candidate) || 'ATK 设备',
+      deviceName: getDeviceDisplayName(candidate),
       sampledAt: new Date().toISOString(),
       protocolName: result.protocolName,
     };
@@ -891,7 +885,7 @@ class NativeBatteryRuntime {
       mode: 'stable',
       grantedDevicesCount: this.state.grantedDevicesCount,
     });
-    this.scheduleRefresh(RETRY_INTERVAL_MS);
+    this.scheduleRefresh(getRetryDelayMs(this.consecutiveReadFailures, this.overlayVisible));
     return true;
   }
 
@@ -1084,7 +1078,7 @@ class NativeBatteryRuntime {
         forceReopen,
       });
 
-      if (this.lastStableSnapshot) {
+      if (this.lastStableSnapshot && !isProtocolFailure) {
         if (hasDevice && this.consecutiveReadFailures >= PROTOCOL_RESET_FAILURE_LIMIT) {
           // 连续失败达到阈值，清协议键 + 强制关闭僵死句柄，
           // 下次 tryReadCurrentDevice 会看到没有 handle 而落入完整重扫+重开路径。
@@ -1111,7 +1105,7 @@ class NativeBatteryRuntime {
           message: `原生 HID 读取异常：${error.message}。正在自动重试...`,
           batteryPercent: null,
           batteryText: '--',
-          deviceName: getDeviceProductName(this.currentDevice) || '',
+          deviceName: getDeviceDisplayName(this.currentDevice),
           charging: false,
           chargeStatus: CHARGE_STATUS_IDLE,
           needsUserAction: false,
@@ -1120,7 +1114,7 @@ class NativeBatteryRuntime {
           mode: 'stable',
           grantedDevicesCount: this.state.grantedDevicesCount,
         });
-        this.scheduleRefresh(RETRY_INTERVAL_MS);
+        this.scheduleRefresh(getRetryDelayMs(this.consecutiveReadFailures, this.overlayVisible));
         return;
       }
 
@@ -1133,7 +1127,7 @@ class NativeBatteryRuntime {
           : `读取设备失败：${error.message}`,
         batteryPercent: this.lastStableSnapshot?.batteryPercent ?? null,
         batteryText: this.lastStableSnapshot?.batteryText ?? '--',
-        deviceName: this.lastStableSnapshot?.deviceName || getDeviceProductName(this.currentDevice) || '',
+        deviceName: this.lastStableSnapshot?.deviceName || getDeviceDisplayName(this.currentDevice),
         charging: this.lastStableSnapshot?.charging ?? false,
         chargeStatus: this.lastStableSnapshot?.chargeStatus || CHARGE_STATUS_IDLE,
         needsUserAction: !hasDevice,
@@ -1142,11 +1136,6 @@ class NativeBatteryRuntime {
         mode: 'stable',
         grantedDevicesCount: this.state.grantedDevicesCount,
       });
-
-      if (shouldAutoRetry) {
-        this.scheduleRefresh(RETRY_INTERVAL_MS);
-        return;
-      }
 
       this.clearPollTimer();
     }

@@ -18,10 +18,7 @@ function register() {
   ipcMain.handle('manager:get-preferences', () => overlayState.buildManagerPreferences());
   ipcMain.handle('manager:get-overlay-state', () => overlayState.get());
 
-  ipcMain.handle('manager:request-refresh', () => {
-    managerWindow.refresh();
-    return true;
-  });
+  ipcMain.handle('manager:request-refresh', () => managerWindow.refresh());
 
   ipcMain.handle('manager:begin-hid-selection', async () => {
     const runtime = batteryRuntime.get();
@@ -58,7 +55,7 @@ function register() {
       sampledAt: new Date().toISOString(),
     });
     hidSelection.clear();
-    managerWindow.refresh();
+    await managerWindow.refresh();
     return true;
   });
 

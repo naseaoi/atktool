@@ -10,7 +10,6 @@ contextBridge.exposeInMainWorld('atkOverlay', {
       ipcRenderer.removeListener('overlay:state-changed', listener);
     };
   },
-  openHubWindow: () => ipcRenderer.send('overlay:open-hub-window'),
   requestRefresh: () => ipcRenderer.invoke('manager:request-refresh'),
   togglePin: () => ipcRenderer.invoke('overlay:toggle-pin'),
   toggleVariant: () => ipcRenderer.invoke('overlay:toggle-variant'),

@@ -173,7 +173,7 @@ function toggle() {
   show();
 }
 
-function refresh() {
+async function refresh() {
   overlaySource.set('manager');
   overlayState.merge({
     status: 'loading',
@@ -183,7 +183,8 @@ function refresh() {
     mode: 'stable',
   });
 
-  void batteryRuntime.get()?.refreshNow({ forceReopen: true, scanDevices: true });
+  await batteryRuntime.get()?.refreshNow({ forceReopen: true, scanDevices: true });
+  return true;
 }
 
 function on(event, listener) {

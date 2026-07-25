@@ -134,11 +134,31 @@ function drawRoundedRect(pixels, width, height, x, y, rectWidth, rectHeight, rad
   }
 }
 
+function drawRect(pixels, width, height, x, y, rectWidth, rectHeight, color) {
+  const startX = Math.max(0, Math.floor(x));
+  const endX = Math.min(width, Math.ceil(x + rectWidth));
+  const startY = Math.max(0, Math.floor(y));
+  const endY = Math.min(height, Math.ceil(y + rectHeight));
+
+  for (let pixelY = startY; pixelY < endY; pixelY += 1) {
+    for (let pixelX = startX; pixelX < endX; pixelX += 1) {
+      blendPixel(pixels, width, pixelX, pixelY, color);
+    }
+  }
+}
+
+function drawRectOutline(pixels, width, height, x, y, rectWidth, rectHeight, thickness, color) {
+  drawRect(pixels, width, height, x, y, rectWidth, thickness, color);
+  drawRect(pixels, width, height, x, y + rectHeight - thickness, rectWidth, thickness, color);
+  drawRect(pixels, width, height, x, y + thickness, thickness, rectHeight - thickness * 2, color);
+  drawRect(pixels, width, height, x + rectWidth - thickness, y + thickness, thickness, rectHeight - thickness * 2, color);
+}
+
 function drawTrayDigit(pixels, width, height, digit, offsetX, offsetY, scale, color) {
   const thickness = 2 * scale;
   const length = 7 * scale;
   const halfLength = 5.5 * scale;
-  const rounded = 0.85 * scale;
+  const rounded = 0.425 * scale;
   const segments = {
     a: { x: offsetX + 2 * scale, y: offsetY, width: length, height: thickness },
     d: { x: offsetX + 2 * scale, y: offsetY + 14 * scale, width: length, height: thickness },
@@ -155,76 +175,54 @@ function drawTrayDigit(pixels, width, height, digit, offsetX, offsetY, scale, co
   }
 }
 
-function renderTrayIconBuffer(percent = null, charging = false) {
+function renderTrayIconPixels(percent = null, charging = false) {
   const pixels = createRgbaCanvas(TRAY_ICON_SIZE, TRAY_ICON_SIZE);
   const numericPercent = Number.isFinite(percent)
     ? Math.max(0, Math.min(100, Math.round(percent)))
     : null;
-  // 满电用单字 "F" 代表 Full,避免 "100" 三位数在小托盘尺寸下挤成一团。
   const text = numericPercent === null
     ? '--'
     : numericPercent >= 100 && !charging
       ? 'F'
       : String(numericPercent);
   const isFull = text === 'F';
-  // 70×70 画布下放大数字占比:1 位约 72%、2 位约 54%,托盘缩到 20-32px 仍清晰;3 位仅作兜底。
-  // F 单独走略小的 scale,否则按 1 位数最大比例会偏大又显得孤立。
-  const scale = isFull ? 2.4 : text.length >= 3 ? 1.72 : text.length === 2 ? 2.38 : 3.15;
-  // F 只亮 a/e/f/g 四段,右侧 (b/c) 没有笔画,按 9×scale 计算可视宽度才能真居中。
+  const scale = isFull ? 2.4 : text.length >= 3 ? 1.52 : text.length === 2 ? 2.1 : 2.8;
   const digitVisualWidth = isFull ? 9 * scale : 11 * scale;
-  const gap = text.length >= 3 ? 2.6 : text.length === 2 ? 4.2 : 0;
+  const gap = text.length >= 3 ? 2.4 : text.length === 2 ? 3.6 : 0;
   const totalWidth = digitVisualWidth * text.length + gap * Math.max(0, text.length - 1);
   const digitHeight = 16 * scale;
   const startX = (TRAY_ICON_SIZE - totalWidth) / 2;
-  // F 缺 d (底横) 段,笔画视觉中心比网格中心高约 1.25×scale,额外下移对齐画布中心。
   const startY = (TRAY_ICON_SIZE - digitHeight) / 2 - 1 + (isFull ? 1.25 * scale : 0);
-  const isLow = numericPercent !== null && numericPercent <= 20 && !charging;
-  // 充电/满电/低电/常态四套配色:充电亮绿、满电柔青、低电告警橙、常态冷青。
-  const outerColor = charging
-    ? [96, 224, 156, 255]
-    : isFull
-      ? [84, 208, 176, 255]
-      : [40, 94, 110, 255];
-  const bodyColor = charging
-    ? [14, 48, 36, 255]
-    : isFull
-      ? [12, 44, 44, 255]
-      : [10, 28, 38, 255];
-  const innerColor = charging
-    ? [26, 78, 58, 255]
-    : isFull
-      ? [24, 74, 70, 255]
-      : [22, 58, 72, 255];
-  const highlightColor = charging || isFull ? [220, 255, 230, 38] : [255, 255, 255, 30];
+  const isLow = numericPercent !== null && numericPercent < 20 && !charging;
   const digitColor = charging
-    ? [148, 255, 204, 255]
-    : isFull
-      ? [176, 255, 222, 255]
-      : isLow
-        ? [255, 186, 110, 255]
-        : [244, 251, 250, 255];
-  const digitShadowColor = [6, 12, 18, 110];
+    ? [126, 230, 168, 255]
+    : isLow
+      ? [255, 166, 70, 255]
+      : [255, 255, 255, 255];
+  const digitShadowColor = [0, 0, 0, 120];
 
-  // 背景三层圆角 + 顶部高光按 70×70 重新对齐,保留立体观感并给数字留出安全区。
-  drawRoundedRect(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, 1.5, 1.5, 67, 67, 20, outerColor);
-  drawRoundedRect(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, 3.5, 3.5, 63, 63, 17.5, bodyColor);
-  drawRoundedRect(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, 5, 5, 60, 60, 16, innerColor);
-  drawRoundedRect(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, 11, 6, 48, 10, 5, highlightColor);
+  drawRect(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, 2, 2, 66, 66, [0, 0, 0, 51]);
+  drawRectOutline(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, 2, 2, 66, 66, 2, [255, 255, 255, 235]);
 
   text.split('').forEach((digit, index) => {
     const offsetX = startX + index * (digitVisualWidth + gap);
-    // 数字下方叠一层半透明阴影,让笔画边缘在任何底色下都清晰。
     drawTrayDigit(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, digit, offsetX + 0.9, startY + 1.1, scale, digitShadowColor);
     drawTrayDigit(pixels, TRAY_ICON_SIZE, TRAY_ICON_SIZE, digit, offsetX, startY, scale, digitColor);
   });
 
-  return encodeRgbaToPng(TRAY_ICON_SIZE, TRAY_ICON_SIZE, pixels);
+  return pixels;
+}
+
+function renderTrayIconBuffer(percent = null, charging = false) {
+  return encodeRgbaToPng(TRAY_ICON_SIZE, TRAY_ICON_SIZE, renderTrayIconPixels(percent, charging));
 }
 
 module.exports = {
   renderTrayIconBuffer,
+  renderTrayIconPixels,
   encodeRgbaToPng,
   createRgbaCanvas,
+  drawRect,
   drawRoundedRect,
   drawTrayDigit,
 };

@@ -2,6 +2,7 @@ const settingsStore = require('../core/settings-store');
 const {
   normalizeDeviceName,
   isGenericDeviceName,
+  resolveDeviceDisplayName,
 } = require('./device-name');
 const {
   buildCollectionSignature,
@@ -37,22 +38,8 @@ function getBoundDisplayDeviceName(device = settingsStore.get().preferredHidDevi
 }
 
 function resolveOverlayDeviceName(name) {
-  const normalized = normalizeDeviceName(name);
   const savedName = getBoundDisplayDeviceName();
-
-  if (normalized && !isGenericDeviceName(normalized)) {
-    return normalized;
-  }
-
-  if (savedName && !isGenericDeviceName(savedName)) {
-    return savedName;
-  }
-
-  if (normalized) {
-    return 'ATK 设备';
-  }
-
-  return savedName;
+  return resolveDeviceDisplayName(name, savedName);
 }
 
 function rememberDisplayDeviceName(name, device = settingsStore.get().preferredHidDevice) {

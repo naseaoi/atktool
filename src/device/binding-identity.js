@@ -92,10 +92,22 @@ function getDeviceBindingMatchLevel(left, right) {
   return 0;
 }
 
+function isSameProductDevice(left, right) {
+  return Boolean(
+    left
+    && right
+    && Number.isFinite(left.vendorId)
+    && Number.isFinite(left.productId)
+    && left.vendorId === right.vendorId
+    && left.productId === right.productId
+  );
+}
+
 module.exports = {
   buildCollectionSignature,
   normalizeDeviceBinding,
   getDeviceBindingKey,
   getLooseDeviceBindingKey,
   getDeviceBindingMatchLevel,
+  isSameProductDevice,
 };

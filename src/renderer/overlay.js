@@ -1,9 +1,10 @@
 const deviceNameEl = document.getElementById('deviceName');
 const batteryTextEl = document.getElementById('batteryText');
 const statusTextEl = document.getElementById('statusText');
+const batteryStateTextEl = document.getElementById('batteryStateText');
 const updatedAtEl = document.getElementById('updatedAt');
+const batteryBarEl = document.getElementById('batteryBar');
 const messageTextEl = document.getElementById('messageText');
-const connectButton = document.getElementById('connectButton');
 const refreshButton = document.getElementById('refreshButton');
 const pinButton = document.getElementById('pinButton');
 const switchButton = document.getElementById('switchButton');
@@ -94,6 +95,30 @@ function getBatteryTone(percent, chargeStatus) {
   return 'high';
 }
 
+function getBatteryStateLabel(percent, chargeStatus) {
+  if (chargeStatus === 'full' || percent === 100) {
+    return '电量已满';
+  }
+
+  if (chargeStatus === 'charging') {
+    return '正在充电';
+  }
+
+  if (percent === null) {
+    return '等待电量';
+  }
+
+  if (percent <= 20) {
+    return '电量偏低';
+  }
+
+  if (percent <= 55) {
+    return '电量适中';
+  }
+
+  return '电量充足';
+}
+
 function triggerRefreshPulse() {
   if (refreshPulseTimer) {
     window.clearTimeout(refreshPulseTimer);
@@ -124,7 +149,8 @@ function scheduleFitHeight() {
     const panelStyle = window.getComputedStyle(panelEl);
     const paddingTop = Number.parseFloat(panelStyle.paddingTop) || 0;
     const paddingBottom = Number.parseFloat(panelStyle.paddingBottom) || 0;
-    const contentHeight = Math.ceil(panelShellEl.scrollHeight + paddingTop + paddingBottom);
+    const shellHeight = panelShellEl.getBoundingClientRect().height;
+    const contentHeight = Math.ceil(shellHeight + paddingTop + paddingBottom);
 
     // 悬浮窗改成按需创建后，继续按内容高度回传，避免每次重开出现底部裁切。
     window.atkOverlay.fitHeight(contentHeight);
@@ -139,21 +165,27 @@ function renderState(state) {
   document.body.dataset.status = state.status || 'loading';
   document.body.dataset.variant = state.overlayVariant || 'full';
   document.body.dataset.batteryTone = getBatteryTone(batteryPercent, chargeStatus);
-  document.body.dataset.batteryFull = batteryPercent === 100 && chargeStatus !== 'charging' ? 'true' : 'false';
-  document.body.dataset.batteryRoundEnd = batteryPercent !== null && batteryPercent >= 86 ? 'true' : 'false';
   deviceNameEl.textContent = state.deviceName || '等待连接';
   deviceNameEl.title = state.deviceName || '';
   batteryTextEl.textContent = state.batteryText || '--';
   statusTextEl.textContent = getStatusLabel(state.status, chargeStatus);
+  batteryStateTextEl.textContent = getBatteryStateLabel(batteryPercent, chargeStatus);
   updatedAtEl.textContent = formatTime(state.sampledAt);
+  updatedAtEl.dateTime = state.sampledAt || '';
   messageTextEl.textContent = state.message || '正在准备页面...';
-  panelShellEl.style.setProperty('--battery-level', String(batteryPercent ?? 0));
+  panelShellEl.style.setProperty('--battery-level', `${batteryPercent ?? 0}%`);
+  if (batteryPercent === null) {
+    batteryBarEl.removeAttribute('aria-valuenow');
+    batteryBarEl.setAttribute('aria-valuetext', '电量未知');
+  } else {
+    batteryBarEl.setAttribute('aria-valuenow', String(batteryPercent));
+    batteryBarEl.setAttribute('aria-valuetext', `${batteryPercent}%`);
+  }
   pinButton.dataset.active = state.alwaysOnTop ? 'true' : 'false';
   pinButton.title = state.alwaysOnTop ? '取消置顶' : '切换置顶';
   pinButton.setAttribute('aria-label', state.alwaysOnTop ? '取消置顶' : '切换置顶');
   switchButton.title = state.overlayVariant === 'compact' ? '切换为完整版' : '切换为简略版';
   switchButton.setAttribute('aria-label', state.overlayVariant === 'compact' ? '切换为完整版' : '切换为简略版');
-  connectButton.textContent = state.needsUserAction ? '设备管理' : '查看管理';
 
   if (nextSampledAt && nextSampledAt !== lastSampledAt) {
     triggerRefreshPulse();
@@ -163,12 +195,13 @@ function renderState(state) {
   scheduleFitHeight();
 }
 
-connectButton.addEventListener('click', () => {
-  window.atkOverlay.openHubWindow();
-});
-
 refreshButton.addEventListener('click', async () => {
-  await window.atkOverlay.requestRefresh();
+  refreshButton.disabled = true;
+  try {
+    await window.atkOverlay.requestRefresh();
+  } finally {
+    refreshButton.disabled = false;
+  }
 });
 
 pinButton.addEventListener('click', async () => {

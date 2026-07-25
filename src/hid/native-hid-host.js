@@ -6,6 +6,7 @@ const { logInfo, logWarn, logError } = require('../utils/logger');
 const WORKER_BOOT_TIMEOUT_MS = 15 * 1000;
 const WORKER_RESTART_BASE_DELAY_MS = 1000;
 const WORKER_RESTART_MAX_DELAY_MS = 15 * 1000;
+const WORKER_RESTART_STABILITY_MS = 60 * 1000;
 // 单条命令最长等待时间：listChooserDevices/refreshNow 内部最多跑两个协议各 ~3s，留出充足余量。
 const WORKER_COMMAND_TIMEOUT_MS = 15 * 1000;
 // dispose 不能阻塞应用退出，单独给一个更短的超时。
@@ -47,6 +48,7 @@ class NativeBatteryRuntime {
     this.workerReady = false;
     this.workerDeferred = null;
     this.restartTimer = null;
+    this.restartResetTimer = null;
     this.nextRequestId = 1;
     this.pendingRequests = new Map();
     this.restartCount = 0;
@@ -104,6 +106,22 @@ class NativeBatteryRuntime {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
     }
+  }
+
+  clearRestartResetTimer() {
+    if (this.restartResetTimer) {
+      clearTimeout(this.restartResetTimer);
+      this.restartResetTimer = null;
+    }
+  }
+
+  scheduleRestartCountReset() {
+    this.clearRestartResetTimer();
+    this.restartResetTimer = setTimeout(() => {
+      this.restartResetTimer = null;
+      this.restartCount = 0;
+    }, WORKER_RESTART_STABILITY_MS);
+    this.restartResetTimer.unref?.();
   }
 
   clearHeartbeatTimer() {
@@ -191,7 +209,7 @@ class NativeBatteryRuntime {
 
     if (message.type === 'ready') {
       this.workerReady = true;
-      this.restartCount = 0;
+      this.scheduleRestartCountReset();
       this.workerDeferred?.resolve(true);
       void this.replayRuntimeState();
       return;
@@ -237,6 +255,7 @@ class NativeBatteryRuntime {
     }
 
     this.clearHeartbeatTimer();
+    this.clearRestartResetTimer();
     this.worker = null;
     this.workerReady = false;
     const exitError = new Error(`原生 HID 子进程已退出，code=${code ?? 'null'}`);
@@ -424,6 +443,7 @@ class NativeBatteryRuntime {
 
   async dispose() {
     this.clearRestartTimer();
+    this.clearRestartResetTimer();
 
     if (!this.worker) {
       this.disposed = true;

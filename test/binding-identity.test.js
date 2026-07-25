@@ -4,6 +4,7 @@ const {
   buildCollectionSignature,
   normalizeDeviceBinding,
   getDeviceBindingMatchLevel,
+  isSameProductDevice,
 } = require('../src/device/binding-identity');
 
 test('binding identity preserves native HID signatures', () => {
@@ -38,4 +39,15 @@ test('binding identity distinguishes exact and loose matches', () => {
   assert.equal(getDeviceBindingMatchLevel(first, { ...first }), 2);
   assert.equal(getDeviceBindingMatchLevel(first, { ...first, collectionSignature: '4/5/6' }), 1);
   assert.equal(getDeviceBindingMatchLevel(first, { ...first, productId: 3 }), 0);
+});
+
+test('product fallback never crosses product ids', () => {
+  const preferred = {
+    vendorId: 0x3554,
+    productId: 0x11fe,
+  };
+
+  assert.equal(isSameProductDevice(preferred, { ...preferred }), true);
+  assert.equal(isSameProductDevice(preferred, { ...preferred, productId: 0x11ff }), false);
+  assert.equal(isSameProductDevice(preferred, { ...preferred, vendorId: 0x3555 }), false);
 });
