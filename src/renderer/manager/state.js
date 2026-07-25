@@ -1,7 +1,6 @@
 import * as dom from './dom-refs.js';
 import { formatTime, getStatusLabel, normalizeOverlayVariant } from './ui-utils.js';
 
-// hid-shared.js 仍以全局 IIFE 挂在 window.AtkHidShared，保持与 overlay 共享不变。
 const shared = window.AtkHidShared;
 
 let state = {

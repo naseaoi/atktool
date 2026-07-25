@@ -1,17 +1,21 @@
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
-const { BrowserWindow } = require('electron');
+const { BrowserWindow, screen } = require('electron');
 const settingsStore = require('../core/settings-store');
 const overlayState = require('../core/overlay-state');
 const batteryRuntime = require('../core/battery-runtime');
 const { sendToWindow } = require('../utils/window-helpers');
 const { logMemorySnapshot } = require('../utils/memory-log');
+const { resolveWindowPosition } = require('../utils/window-bounds');
 
 // 悬浮窗生命周期 + 尺寸/位置/置顶同步。对外只暴露 show/hide/toggle/applyVariant 等动作。
 // 状态推送通过订阅 overlayState/settings 自动完成,无需外部调用。
 
 const emitter = new EventEmitter();
+const BOUNDS_PERSIST_DELAY_MS = 400;
 let overlayWindow = null;
+let boundsPersistTimer = null;
+let pendingOverlayBounds = null;
 
 function get() {
   return overlayWindow;
@@ -35,7 +39,28 @@ function persistOverlayBounds(bounds) {
     return;
   }
 
-  // 两种形态共用同一套锚点,保证移动完整版后切到简略版仍停在同一位置。
+  pendingOverlayBounds = { x: bounds.x, y: bounds.y };
+
+  if (boundsPersistTimer) {
+    clearTimeout(boundsPersistTimer);
+  }
+
+  boundsPersistTimer = setTimeout(flushOverlayBounds, BOUNDS_PERSIST_DELAY_MS);
+  boundsPersistTimer.unref?.();
+}
+
+function flushOverlayBounds() {
+  if (boundsPersistTimer) {
+    clearTimeout(boundsPersistTimer);
+    boundsPersistTimer = null;
+  }
+
+  if (!pendingOverlayBounds) {
+    return;
+  }
+
+  const bounds = pendingOverlayBounds;
+  pendingOverlayBounds = null;
   settingsStore.update({
     overlayBounds: { x: bounds.x, y: bounds.y },
     compactOverlayBounds: { x: bounds.x, y: bounds.y },
@@ -52,8 +77,9 @@ function fitHeight(contentHeight) {
   }
 
   const metrics = overlayState.getOverlayMetrics('full');
-  const targetHeight = Math.max(340, Math.ceil(contentHeight));
   const currentBounds = overlayWindow.getContentBounds();
+  const display = screen.getDisplayMatching(currentBounds);
+  const targetHeight = Math.min(display.workArea.height, Math.max(340, Math.ceil(contentHeight)));
 
   if (Math.abs(currentBounds.height - targetHeight) <= 2) {
     return;
@@ -74,6 +100,12 @@ function create() {
   const overlayVariant = overlayState.getOverlayVariant();
   const metrics = overlayState.getOverlayMetrics(overlayVariant);
   const storedBounds = overlayState.getStoredOverlayBounds(overlayVariant);
+  const storedPosition = resolveWindowPosition(
+    storedBounds,
+    metrics,
+    screen.getAllDisplays().map((display) => display.workArea),
+    screen.getPrimaryDisplay().workArea
+  );
 
   overlayWindow = new BrowserWindow({
     width: metrics.width,
@@ -90,7 +122,7 @@ function create() {
     alwaysOnTop: settings.alwaysOnTop,
     movable: true,
     roundedCorners: true,
-    ...(storedBounds ? { x: storedBounds.x, y: storedBounds.y } : {}),
+    ...(storedPosition ? { x: storedPosition.x, y: storedPosition.y } : {}),
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'overlay-preload.js'),
       contextIsolation: true,
@@ -118,6 +150,7 @@ function create() {
   });
 
   overlayWindow.on('closed', () => {
+    flushOverlayBounds();
     overlayWindow = null;
     batteryRuntime.get()?.setOverlayVisible(false);
     emitter.emit('visibility-changed', false);
@@ -172,13 +205,19 @@ function applyVariantImmediately(overlayVariant) {
 
   const metrics = overlayState.getOverlayMetrics(overlayVariant);
   const nextBounds = overlayState.getStoredOverlayBounds(overlayVariant);
+  const nextPosition = resolveWindowPosition(
+    nextBounds,
+    metrics,
+    screen.getAllDisplays().map((display) => display.workArea),
+    screen.getPrimaryDisplay().workArea
+  );
 
   overlayWindow.setMinimumSize(metrics.width, metrics.height);
   overlayWindow.setMaximumSize(metrics.width, metrics.height);
   overlayWindow.setSize(metrics.width, metrics.height);
 
-  if (nextBounds) {
-    overlayWindow.setPosition(nextBounds.x, nextBounds.y);
+  if (nextPosition) {
+    overlayWindow.setPosition(nextPosition.x, nextPosition.y);
   }
 }
 

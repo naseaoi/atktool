@@ -1,6 +1,6 @@
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
-const { BrowserWindow } = require('electron');
+const { BrowserWindow, screen } = require('electron');
 const settingsStore = require('../core/settings-store');
 const overlayState = require('../core/overlay-state');
 const overlaySource = require('../core/overlay-source');
@@ -64,8 +64,12 @@ function fitHeight(contentHeight) {
     return;
   }
 
-  const targetHeight = Math.max(MANAGER_MIN_HEIGHT, Math.ceil(contentHeight));
   const currentBounds = managerWindow.getContentBounds();
+  const display = screen.getDisplayMatching(currentBounds);
+  const targetHeight = Math.min(
+    display.workArea.height,
+    Math.max(MANAGER_MIN_HEIGHT, Math.ceil(contentHeight))
+  );
 
   if (Math.abs(currentBounds.height - targetHeight) <= 2) {
     scheduleInitialShow();

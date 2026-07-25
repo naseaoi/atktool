@@ -1,25 +1,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { app } = require('electron');
+const { getDefaultSettings, normalizeSettings } = require('./settings-schema');
 
 const STORE_FILE = 'settings.json';
 
 function getStorePath() {
   return path.join(app.getPath('userData'), STORE_FILE);
-}
-
-function getDefaultSettings() {
-  return {
-    overlayBounds: null,
-    compactOverlayBounds: null,
-    preferredHidDevice: null,
-    displayDeviceName: '',
-    displayDeviceNameBinding: null,
-    alwaysOnTop: true,
-    openAtLogin: false,
-    overlayVariant: 'full',
-    overlayVisible: true,
-  };
 }
 
 function readSettings() {
@@ -31,10 +18,7 @@ function readSettings() {
     }
 
     const raw = fs.readFileSync(filePath, 'utf8');
-    return {
-      ...getDefaultSettings(),
-      ...JSON.parse(raw),
-    };
+    return normalizeSettings(JSON.parse(raw));
   } catch (error) {
     return getDefaultSettings();
   }
@@ -42,13 +26,12 @@ function readSettings() {
 
 function writeSettings(nextSettings) {
   const filePath = getStorePath();
-  const payload = {
-    ...getDefaultSettings(),
-    ...nextSettings,
-  };
+  const payload = normalizeSettings(nextSettings);
+  const temporaryPath = `${filePath}.tmp`;
 
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  fs.renameSync(temporaryPath, filePath);
 }
 
 module.exports = {

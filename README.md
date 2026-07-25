@@ -115,8 +115,8 @@ npm run start:verbose
    │  ├─ settings-store.js       #   设置订阅与合并
    │  └─ store.js                #   settings.json 持久化
    ├─ device/                    # 设备识别与选择
+   │  ├─ binding-identity.js     #   设备绑定身份纯函数
    │  ├─ device-binding.js       #   绑定偏好
-   │  ├─ device-matcher.js       #   设备匹配规则
    │  ├─ device-name.js          #   设备名归一化
    │  └─ hid-selection.js        #   HID 列表选择
    ├─ hid/                       # 原生 HID 协议层
@@ -141,7 +141,7 @@ npm run start:verbose
    │  │  ├─ state.js
    │  │  └─ ui-utils.js
    │  ├─ overlay.html / .css / .js
-   │  └─ hid-shared.js           #   渲染进程公用工具
+   │  └─ hid-shared.js           #   设备管理页 HID 展示工具
    ├─ system/                    # 系统层集成
    │  ├─ login-item.js           #   开机启动
    │  ├─ power-monitor.js        #   休眠/唤醒重连
@@ -179,6 +179,8 @@ npm run start:verbose
 ```bash
 npm start              # 启动 Electron
 npm run start:verbose  # 启动并输出详细 Electron 日志
+npm run check          # 语法检查 + 单元测试
+npm run audit:runtime  # 审计生产依赖
 npm run build:win      # 打包 Windows NSIS 安装包
 ```
 

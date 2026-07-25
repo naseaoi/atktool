@@ -151,7 +151,7 @@ function configureHubWebHid(hubSession, getPreferredBinding = () => null) {
     event.preventDefault();
 
     const frameOrigin = getOrigin(details?.frame?.url);
-    if (frameOrigin && frameOrigin !== HUB_ORIGIN) {
+    if (frameOrigin !== HUB_ORIGIN) {
       callback();
       return;
     }
@@ -177,4 +177,5 @@ module.exports = {
   buildBrowserUserAgent,
   chooseHubHidDevice,
   configureHubWebHid,
+  isHubOrigin,
 };

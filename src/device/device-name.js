@@ -7,7 +7,7 @@ function normalizeDeviceName(name) {
 }
 
 function getDeviceProductName(device) {
-  return normalizeDeviceName(device?.productName || device?.name);
+  return normalizeDeviceName(device?.productName || device?.product || device?.name);
 }
 
 // 判断一个名称是否"过于通用"(比如"Wireless Mouse"),没有品牌辨识度,不值得持久化为展示名。

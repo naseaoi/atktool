@@ -6,6 +6,10 @@
   "scripts": {
     "start": "electron .",
     "start:verbose": "electron . --verbose",
+    "test": "node --test",
+    "check:syntax": "node scripts/check-syntax.js",
+    "check": "npm run check:syntax && npm test",
+    "audit:runtime": "npm audit --omit=dev --registry=https://registry.npmjs.org/",
     "build:win": "electron-builder --win nsis --publish never"
   },
   "build": {
@@ -49,12 +53,12 @@
   "keywords": [],
   "author": "",
   "devDependencies": {
-    "electron": "^41.1.0",
-    "electron-builder": "^26.8.1"
+    "electron": "^41.10.3",
+    "electron-builder": "^26.15.7"
   },
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "node-hid": "^3.3.0"
+    "node-hid": "^3.4.0"
   }
 }

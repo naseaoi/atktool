@@ -1,5 +1,6 @@
 const { EventEmitter } = require('node:events');
 const { readSettings, writeSettings } = require('./store');
+const { getDefaultSettings, normalizeSettings } = require('./settings-schema');
 
 // 集中管理 settings 的读写。模块加载时即从磁盘读取,后续 update 通过事件广播。
 // 所有业务模块订阅 'changed' 事件,无需互相 require,打破循环依赖。
@@ -14,12 +15,26 @@ function get() {
 }
 
 function update(patch) {
-  settings = {
+  const nextSettings = normalizeSettings({
     ...settings,
     ...patch,
-  };
+  });
+  const changedPatch = {};
+
+  for (const key of Object.keys(getDefaultSettings())) {
+    if (JSON.stringify(settings[key]) !== JSON.stringify(nextSettings[key])) {
+      changedPatch[key] = nextSettings[key];
+    }
+  }
+
+  if (Object.keys(changedPatch).length === 0) {
+    return settings;
+  }
+
+  settings = nextSettings;
   writeSettings(settings);
-  emitter.emit('changed', { settings, patch });
+  emitter.emit('changed', { settings, patch: changedPatch });
+  return settings;
 }
 
 function on(event, listener) {

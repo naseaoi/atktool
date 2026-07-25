@@ -3,9 +3,13 @@ const { ipcRenderer } = require('electron');
 let observer = null;
 let sendTimer = null;
 let heartbeatTimer = null;
+let lastStateFingerprint = '';
 
 const FULL_STATUS_PATTERN = /full|fully charged|已充满|充满|充电完成/i;
 const CHARGING_STATUS_PATTERN = /charging|正在充电|充电中|充电/i;
+const MAX_PERCENT_CANDIDATES = 8;
+const STATE_SEND_DELAY_MS = 400;
+const STATE_HEARTBEAT_INTERVAL_MS = 10 * 1000;
 
 function isVisible(element) {
   if (!element || !(element instanceof HTMLElement)) {
@@ -17,44 +21,69 @@ function isVisible(element) {
 }
 
 function collectPercentCandidates() {
-  const elements = Array.from(document.querySelectorAll('body *'));
   const candidates = [];
+  if (!document.body) {
+    return candidates;
+  }
 
-  for (const element of elements) {
-    if (!isVisible(element)) {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+  let element = walker.nextNode();
+
+  while (element && candidates.length < MAX_PERCENT_CANDIDATES) {
+    if (element.children.length > 0) {
+      element = walker.nextNode();
       continue;
     }
 
-    const text = element.innerText?.trim();
-    if (!text || text.length > 12) {
-      continue;
-    }
-
-    const match = text.match(/^(\d{1,3})%$/);
+    const text = element.textContent?.trim();
+    const match = text?.match(/^(\d{1,3})%$/);
     if (!match) {
+      element = walker.nextNode();
+      continue;
+    }
+
+    if (!isVisible(element)) {
+      element = walker.nextNode();
       continue;
     }
 
     const value = Number(match[1]);
     if (!Number.isFinite(value) || value < 0 || value > 100) {
+      element = walker.nextNode();
       continue;
     }
 
-    // 官网页面没有稳定的数据接口，这里先抓取电量节点周围的文本做上下文推断。
     const contextText = element.parentElement?.innerText
       ?.split('\n')
       .map((line) => line.trim())
       .filter(Boolean)
-      .slice(0, 4) || [];
+      .slice(0, 6) || [];
 
     candidates.push({
       value,
       text,
       contextText,
     });
+
+    element = walker.nextNode();
   }
 
   return candidates;
+}
+
+function getCandidateScore(candidate) {
+  const contextText = candidate?.contextText?.join('\n') || '';
+  let score = 0;
+
+  if (/ATK|VXE|mouse|鼠标|F1|X1|R1/i.test(contextText)) {
+    score += 10;
+  }
+
+  if (/battery|电量|charging|充电/i.test(contextText)) {
+    score += 6;
+  }
+
+  return score;
 }
 
 function pickDeviceName(lines) {
@@ -110,7 +139,8 @@ function collectState() {
     .map((line) => line.trim())
     .filter(Boolean);
   const percentCandidates = collectPercentCandidates();
-  const bestCandidate = percentCandidates[0] || null;
+  const bestCandidate = [...percentCandidates]
+    .sort((left, right) => getCandidateScore(right) - getCandidateScore(left))[0] || null;
   const deviceNameLines = bestCandidate?.contextText?.length ? bestCandidate.contextText : lines;
   const deviceName = pickDeviceName(deviceNameLines) || pickDeviceName(lines);
   const hasConnectPrompt = lines.includes('请连接设备') || lines.includes('新增设备');
@@ -141,24 +171,30 @@ function collectState() {
     deviceName,
     charging,
     chargeStatus,
-    pageTitle: document.title,
-    percentCandidates,
     needsUserAction: status === 'waiting',
-    sampledAt: new Date().toISOString(),
   };
 }
 
 function sendState() {
-  ipcRenderer.send('hub:state', collectState());
+  const state = collectState();
+  const fingerprint = JSON.stringify(state);
+  if (fingerprint === lastStateFingerprint) {
+    return;
+  }
+
+  lastStateFingerprint = fingerprint;
+  ipcRenderer.send('hub:state', {
+    ...state,
+    sampledAt: new Date().toISOString(),
+  });
 }
 
 function scheduleSend() {
   window.clearTimeout(sendTimer);
-  sendTimer = window.setTimeout(sendState, 120);
+  sendTimer = window.setTimeout(sendState, STATE_SEND_DELAY_MS);
 }
 
 function boot() {
-  // 用 DOM 观察 + 心跳兜底两层策略，尽量在官网改版前保持这个快版原型可用。
   scheduleSend();
 
   observer = new MutationObserver(() => {
@@ -169,10 +205,9 @@ function boot() {
     subtree: true,
     childList: true,
     characterData: true,
-    attributes: true,
   });
 
-  heartbeatTimer = window.setInterval(sendState, 5000);
+  heartbeatTimer = window.setInterval(sendState, STATE_HEARTBEAT_INTERVAL_MS);
 }
 
 window.addEventListener('DOMContentLoaded', boot, { once: true });

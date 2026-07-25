@@ -1,7 +1,12 @@
-const fs = require('node:fs');
 const path = require('node:path');
+const { createLogFileWriter } = require('./log-file-writer');
 
 const LOG_FILE_NAME = 'runtime.log';
+const MAX_LOG_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_LOG_ARCHIVES = 4;
+const MAX_MESSAGE_LENGTH = 4_096;
+const MAX_DETAIL_LENGTH = 32_768;
+let logFileWriter = null;
 
 function getElectronApp() {
   try {
@@ -32,19 +37,42 @@ function getLogFilePath() {
   return path.join(getLogDirectory(), LOG_FILE_NAME);
 }
 
+function truncateText(value, maxLength) {
+  const text = String(value);
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength)}\n...<truncated>`;
+}
+
+function getLogFileWriter() {
+  const directory = getLogDirectory();
+  if (!logFileWriter || path.dirname(logFileWriter.filePath) !== directory) {
+    logFileWriter = createLogFileWriter({
+      directory,
+      fileName: LOG_FILE_NAME,
+      maxBytes: MAX_LOG_FILE_BYTES,
+      maxArchives: MAX_LOG_ARCHIVES,
+    });
+  }
+
+  return logFileWriter;
+}
+
 function serializeDetail(detail) {
   if (detail === undefined || detail === null) {
     return '';
   }
 
   if (detail instanceof Error) {
-    return [detail.name ? `${detail.name}: ${detail.message}` : detail.message, detail.stack]
+    return truncateText([detail.name ? `${detail.name}: ${detail.message}` : detail.message, detail.stack]
       .filter(Boolean)
-      .join('\n');
+      .join('\n'), MAX_DETAIL_LENGTH);
   }
 
   try {
-    return JSON.stringify(detail, (key, value) => {
+    return truncateText(JSON.stringify(detail, (key, value) => {
       if (value instanceof Error) {
         return {
           name: value.name,
@@ -54,14 +82,14 @@ function serializeDetail(detail) {
       }
 
       return value;
-    }, 2);
+    }, 2), MAX_DETAIL_LENGTH);
   } catch (_error) {
-    return String(detail);
+    return truncateText(detail, MAX_DETAIL_LENGTH);
   }
 }
 
 function writeLog(level, message, detail) {
-  const lines = [`[${new Date().toISOString()}] [${level}] ${message}`];
+  const lines = [`[${new Date().toISOString()}] [${level}] ${truncateText(message, MAX_MESSAGE_LENGTH)}`];
   const serializedDetail = serializeDetail(detail);
 
   if (serializedDetail) {
@@ -70,12 +98,7 @@ function writeLog(level, message, detail) {
 
   const payload = `${lines.join('\n')}\n`;
 
-  try {
-    fs.mkdirSync(getLogDirectory(), { recursive: true });
-    fs.appendFileSync(getLogFilePath(), payload, 'utf8');
-  } catch (_error) {
-    // 日志写盘失败时至少保留控制台输出，避免主流程受影响。
-  }
+  void getLogFileWriter().write(payload);
 
   if (level === 'ERROR') {
     console.error(payload.trimEnd());
@@ -102,7 +125,12 @@ function logError(message, detail) {
   writeLog('ERROR', message, detail);
 }
 
+function flushLogWrites() {
+  return logFileWriter?.flush() || Promise.resolve();
+}
+
 module.exports = {
+  flushLogWrites,
   getLogFilePath,
   logInfo,
   logWarn,

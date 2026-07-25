@@ -1,5 +1,6 @@
 const { NativeBatteryRuntime } = require('./native-hid');
 const { logInfo, logError } = require('../utils/logger');
+const { createSerialTaskQueue } = require('../utils/serial-task-queue');
 
 // utilityProcess 通过 process.parentPort 与主进程通信；标准 Node 子进程的
 // process.send/process.on('message') 在此环境下均不可用。
@@ -12,6 +13,7 @@ function postToParent(message) {
 }
 
 let disposing = false;
+const enqueueRequest = createSerialTaskQueue();
 
 const runtime = new NativeBatteryRuntime({
   onStateChange(nextState) {
@@ -31,8 +33,8 @@ const runtime = new NativeBatteryRuntime({
 });
 
 const handlers = {
-  setPreferredBinding(payload) {
-    runtime.setPreferredBinding(payload || null);
+  async setPreferredBinding(payload) {
+    await runtime.setPreferredBinding(payload || null);
     return true;
   },
   setOverlayVisible(payload) {
@@ -69,23 +71,7 @@ async function handleRequest(message) {
   return handler(message.payload);
 }
 
-parentPort?.on('message', async (event) => {
-  // utilityProcess 下 parentPort 收到的是 MessageEvent，真实负载在 event.data。
-  const message = event?.data;
-  if (!message || typeof message !== 'object') {
-    return;
-  }
-
-  // 心跳走独立通道，立即同步回复，避免被 HID IO 请求排队阻塞导致主进程误判失联。
-  if (message.type === 'ping') {
-    postToParent({ type: 'pong' });
-    return;
-  }
-
-  if (message.type !== 'request') {
-    return;
-  }
-
+async function processRequest(message) {
   try {
     const result = await handleRequest(message);
     postToParent({
@@ -110,6 +96,26 @@ parentPort?.on('message', async (event) => {
       error: error.message,
     });
   }
+}
+
+parentPort?.on('message', (event) => {
+  // utilityProcess 下 parentPort 收到的是 MessageEvent，真实负载在 event.data。
+  const message = event?.data;
+  if (!message || typeof message !== 'object') {
+    return;
+  }
+
+  // 心跳走独立通道，立即同步回复，避免被 HID IO 请求排队阻塞导致主进程误判失联。
+  if (message.type === 'ping') {
+    postToParent({ type: 'pong' });
+    return;
+  }
+
+  if (message.type !== 'request') {
+    return;
+  }
+
+  void enqueueRequest(() => processRequest(message));
 });
 
 process.on('uncaughtException', async (error) => {

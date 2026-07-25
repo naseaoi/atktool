@@ -1,6 +1,19 @@
 const HID = require('node-hid');
 
 const { logInfo, logWarn } = require('../utils/logger');
+const {
+  normalizeDeviceName,
+  getDeviceProductName,
+  isGenericDeviceName,
+} = require('../device/device-name');
+const {
+  normalizeDeviceBinding,
+  getDeviceBindingKey,
+  getLooseDeviceBindingKey,
+  getDeviceBindingMatchLevel,
+} = require('../device/binding-identity');
+const { summarizeErrors } = require('../utils/error-summary');
+const { mergeRefreshOptions } = require('./refresh-options');
 
 const POLL_INTERVAL_VISIBLE_MS = 10 * 1000;
 const POLL_INTERVAL_HIDDEN_DEFAULT_MS = 10 * 60 * 1000;
@@ -21,75 +34,6 @@ const CHARGE_STATUS_FULL = 'full';
 const CHARGE_FLAG_CHARGING = 1;
 const CHARGE_FLAG_FULL = 2;
 
-function normalizeDeviceName(name) {
-  return typeof name === 'string' ? name.trim() : '';
-}
-
-function getDeviceProductName(device) {
-  return normalizeDeviceName(device?.productName || device?.product || device?.name);
-}
-
-function buildCollectionSignature(device) {
-  return [
-    Number.isFinite(device?.interface) ? device.interface : '',
-    Number.isFinite(device?.usagePage) ? device.usagePage : '',
-    Number.isFinite(device?.usage) ? device.usage : '',
-    Number.isFinite(device?.release) ? device.release : '',
-    normalizeDeviceName(device?.serialNumber),
-  ].join('/');
-}
-
-function normalizeDeviceBinding(device) {
-  if (!device || !Number.isFinite(device.vendorId) || !Number.isFinite(device.productId)) {
-    return null;
-  }
-
-  return {
-    vendorId: device.vendorId,
-    productId: device.productId,
-    productName: getDeviceProductName(device),
-    collectionSignature: normalizeDeviceName(device.collectionSignature) || buildCollectionSignature(device),
-  };
-}
-
-function getDeviceBindingKey(device) {
-  const normalized = normalizeDeviceBinding(device);
-
-  if (!normalized) {
-    return '';
-  }
-
-  return [normalized.vendorId, normalized.productId, normalized.productName, normalized.collectionSignature].join(':');
-}
-
-function getLooseDeviceBindingKey(device) {
-  const normalized = normalizeDeviceBinding(device);
-
-  if (!normalized) {
-    return '';
-  }
-
-  return [normalized.vendorId, normalized.productId, normalized.productName].join(':');
-}
-
-function getDeviceBindingMatchLevel(left, right) {
-  const exactLeft = getDeviceBindingKey(left);
-  const exactRight = getDeviceBindingKey(right);
-
-  if (exactLeft && exactLeft === exactRight) {
-    return 2;
-  }
-
-  const looseLeft = getLooseDeviceBindingKey(left);
-  const looseRight = getLooseDeviceBindingKey(right);
-
-  if (looseLeft && looseLeft === looseRight) {
-    return 1;
-  }
-
-  return 0;
-}
-
 function isSameVendorDevice(device, preferredBinding = null) {
   return Number.isFinite(device?.vendorId)
     && Number.isFinite(preferredBinding?.vendorId)
@@ -102,19 +46,6 @@ function isAutoSwitchCandidate(device, preferredBinding = null) {
   }
 
   return isSameVendorDevice(device, preferredBinding);
-}
-
-function isGenericDeviceName(name) {
-  const normalized = normalizeDeviceName(name);
-  if (!normalized) {
-    return true;
-  }
-
-  if (/ATK|VXE/i.test(normalized)) {
-    return false;
-  }
-
-  return /wireless mouse|mouse|dongle|receiver|nano|hid|bluetooth|keyboard/i.test(normalized);
 }
 
 function supportsKnownBatteryProtocolHint(device) {
@@ -609,6 +540,9 @@ class NativeBatteryRuntime {
     this.lastStableSnapshot = null;
     this.pollTimer = null;
     this.refreshNonce = 0;
+    this.refreshPromise = null;
+    this.queuedRefreshOptions = null;
+    this.disposed = false;
     this._lastDevicePaths = null;
     this.state = {
       status: 'loading',
@@ -637,20 +571,29 @@ class NativeBatteryRuntime {
     this.onStateChange(this.state);
   }
 
-  setPreferredBinding(binding) {
+  async setPreferredBinding(binding) {
     const previousKey = getDeviceBindingKey(this.preferredBinding);
     const nextBinding = normalizeDeviceBinding(binding);
     const nextKey = getDeviceBindingKey(nextBinding);
 
+    if (previousKey === nextKey) {
+      this.preferredBinding = nextBinding;
+      return;
+    }
+
+    this.refreshNonce += 1;
+    this.queuedRefreshOptions = null;
+    this.clearPollTimer();
     this.preferredBinding = nextBinding;
+    await this.waitForActiveRefresh();
 
     if (!nextKey) {
-      void this.resetCurrentDevice({ clearPreferred: true });
+      await this.resetCurrentDevice({ clearPreferred: true });
       return;
     }
 
     if (previousKey && previousKey !== nextKey && this.currentDeviceKey !== nextKey) {
-      void this.resetCurrentDevice();
+      await this.resetCurrentDevice();
     }
   }
 
@@ -674,7 +617,7 @@ class NativeBatteryRuntime {
   setOverlayVisible(visible) {
     this.overlayVisible = Boolean(visible);
 
-    if (this.runtimeSuspended || this.state.mode === 'fallback') {
+    if (this.disposed || this.runtimeSuspended || this.state.mode === 'fallback') {
       return;
     }
 
@@ -695,7 +638,9 @@ class NativeBatteryRuntime {
 
     if (nextValue) {
       this.refreshNonce += 1;
+      this.queuedRefreshOptions = null;
       this.clearPollTimer();
+      await this.waitForActiveRefresh();
       if (!wasSuspended) {
         await this.resetCurrentDevice();
       }
@@ -761,7 +706,7 @@ class NativeBatteryRuntime {
   }
 
   scheduleRefresh(delay = this.getNextPollInterval()) {
-    if (this.runtimeSuspended || this.state.mode === 'fallback') {
+    if (this.disposed || this.runtimeSuspended || this.state.mode === 'fallback') {
       this.clearPollTimer();
       return;
     }
@@ -841,12 +786,12 @@ class NativeBatteryRuntime {
     }
 
     const binding = normalizeDeviceBinding(device);
-    this.setPreferredBinding(binding);
+    await this.setPreferredBinding(binding);
     await this.onBindingDetected(binding);
     return binding;
   }
 
-  async commitSuccessfulRead(candidate, result, deviceCount) {
+  async commitSuccessfulRead(candidate, result, deviceCount, nonce) {
     const previousSnapshot = this.lastStableSnapshot;
     const binding = normalizeDeviceBinding(candidate);
     if (this.hasBoundDevice() && !isAutoSwitchCandidate(candidate, this.preferredBinding)) {
@@ -854,6 +799,10 @@ class NativeBatteryRuntime {
     }
 
     await this.onBindingDetected(binding);
+    if (nonce !== this.refreshNonce || this.runtimeSuspended || this.disposed) {
+      return false;
+    }
+
     this.preferredBinding = binding;
     this.consecutiveReadFailures = 0;
     this.lastStableSnapshot = {
@@ -891,6 +840,7 @@ class NativeBatteryRuntime {
     }
 
     this.scheduleRefresh();
+    return true;
   }
 
   async tryReadCurrentDevice(nonce, forceReopen = false) {
@@ -919,7 +869,7 @@ class NativeBatteryRuntime {
         return true;
       }
 
-      await this.commitSuccessfulRead(this.currentDevice, result, this.state.grantedDevicesCount);
+      await this.commitSuccessfulRead(this.currentDevice, result, this.state.grantedDevicesCount, nonce);
       return true;
     } catch (_error) {
       await closeHandle(this.currentHandle);
@@ -1025,7 +975,37 @@ class NativeBatteryRuntime {
     }
   }
 
-  async refreshNow(options = {}) {
+  waitForActiveRefresh() {
+    return this.refreshPromise || Promise.resolve();
+  }
+
+  async runQueuedRefreshes() {
+    while (this.queuedRefreshOptions && !this.runtimeSuspended && !this.disposed) {
+      const options = this.queuedRefreshOptions;
+      this.queuedRefreshOptions = null;
+      await this.runRefresh(options);
+    }
+
+    return true;
+  }
+
+  refreshNow(options = {}) {
+    if (this.runtimeSuspended || this.disposed) {
+      return Promise.resolve(false);
+    }
+
+    this.queuedRefreshOptions = mergeRefreshOptions(this.queuedRefreshOptions, options);
+
+    if (!this.refreshPromise) {
+      this.refreshPromise = this.runQueuedRefreshes().finally(() => {
+        this.refreshPromise = null;
+      });
+    }
+
+    return this.refreshPromise;
+  }
+
+  async runRefresh(options = {}) {
     const { forceReopen = false, scanDevices = false } = options;
     const nonce = ++this.refreshNonce;
     this.clearPollTimer();
@@ -1072,7 +1052,7 @@ class NativeBatteryRuntime {
             return;
           }
 
-          await this.commitSuccessfulRead(candidate, result, devices.length);
+          await this.commitSuccessfulRead(candidate, result, devices.length, nonce);
           return;
         } catch (error) {
           candidateErrors.push(error.message);
@@ -1084,7 +1064,7 @@ class NativeBatteryRuntime {
         }
       }
 
-      throw new Error(candidateErrors.join(' | ') || '读取设备失败');
+      throw new Error(summarizeErrors(candidateErrors) || '读取设备失败');
     } catch (error) {
       if (nonce !== this.refreshNonce || this.runtimeSuspended) {
         return;
@@ -1173,8 +1153,13 @@ class NativeBatteryRuntime {
   }
 
   async dispose() {
+    this.disposed = true;
+    this.runtimeSuspended = true;
+    this.refreshNonce += 1;
+    this.queuedRefreshOptions = null;
     this.clearPollTimer();
     stopDeviceChangeWatcher();
+    await this.waitForActiveRefresh();
     await closeHandle(this.currentHandle);
     this.currentHandle = null;
   }

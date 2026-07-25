@@ -6,7 +6,7 @@ const overlayState = require('../core/overlay-state');
 const overlaySource = require('../core/overlay-source');
 const windowIcons = require('./window-icons');
 const { HUB_URL, HUB_SESSION_PARTITION } = require('../core/constants');
-const { buildBrowserUserAgent, configureHubWebHid } = require('../hid/hub-web-hid');
+const { buildBrowserUserAgent, configureHubWebHid, isHubOrigin } = require('../hid/hub-web-hid');
 const { logWarn } = require('../utils/logger');
 const { logMemorySnapshot } = require('../utils/memory-log');
 
@@ -15,6 +15,17 @@ const { logMemorySnapshot } = require('../utils/memory-log');
 
 const emitter = new EventEmitter();
 let fallbackHubWindow = null;
+
+function guardHubNavigation(event, targetUrl) {
+  if (isHubOrigin(targetUrl)) {
+    return;
+  }
+
+  event.preventDefault();
+  logWarn('已阻止同步官网电量窗口跳转到非预期来源', {
+    targetUrl,
+  });
+}
 
 function get() {
   return fallbackHubWindow;
@@ -40,6 +51,7 @@ function create() {
       preload: path.join(__dirname, '..', 'preload', 'hub-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
       partition: HUB_SESSION_PARTITION,
     },
   });
@@ -48,6 +60,8 @@ function create() {
     buildBrowserUserAgent(fallbackHubWindow.webContents.getUserAgent())
   );
   fallbackHubWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  fallbackHubWindow.webContents.on('will-navigate', guardHubNavigation);
+  fallbackHubWindow.webContents.on('will-redirect', guardHubNavigation);
   fallbackHubWindow.loadURL(HUB_URL);
   windowIcons.applyTo(fallbackHubWindow, '官网同步窗口');
 
@@ -91,9 +105,21 @@ function create() {
   });
 
   fallbackHubWindow.on('closed', () => {
+    const shouldResumeNativeSource = overlaySource.get() === 'hub';
     fallbackHubWindow = null;
     emitter.emit('visibility-changed', false);
     logMemorySnapshot('fallback-window-closed');
+
+    if (shouldResumeNativeSource) {
+      overlaySource.set('manager');
+      overlayState.merge({
+        status: 'loading',
+        message: '同步官网电量窗口已关闭，正在恢复本地 HID 直连...',
+        needsUserAction: false,
+        sampledAt: new Date().toISOString(),
+        mode: 'stable',
+      });
+    }
 
     // 窗口销毁后主动清理 Hub partition 的 HTTP 缓存,把 hub.atk.pro 在磁盘/内存中占用的
     // Chromium 缓存(约 80-150MB)释放回系统。cookie/localStorage 仍保留在 persist 分区里,
