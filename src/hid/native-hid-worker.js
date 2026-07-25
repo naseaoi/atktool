@@ -39,8 +39,8 @@ const handlers = {
     runtime.setOverlayVisible(Boolean(payload));
     return true;
   },
-  setSuspended(payload) {
-    runtime.setSuspended(Boolean(payload));
+  async setSuspended(payload) {
+    await runtime.setSuspended(Boolean(payload));
     return true;
   },
   async listChooserDevices() {

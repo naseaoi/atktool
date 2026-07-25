@@ -163,7 +163,7 @@ function renderTrayIconBuffer(percent = null, charging = false) {
   // 满电用单字 "F" 代表 Full,避免 "100" 三位数在小托盘尺寸下挤成一团。
   const text = numericPercent === null
     ? '--'
-    : numericPercent >= 100
+    : numericPercent >= 100 && !charging
       ? 'F'
       : String(numericPercent);
   const isFull = text === 'F';

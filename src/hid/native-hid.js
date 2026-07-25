@@ -20,7 +20,6 @@ const CHARGE_STATUS_CHARGING = 'charging';
 const CHARGE_STATUS_FULL = 'full';
 const CHARGE_FLAG_CHARGING = 1;
 const CHARGE_FLAG_FULL = 2;
-const WIRED_FULL_SENTINEL_PERCENT = 95;
 
 function normalizeDeviceName(name) {
   return typeof name === 'string' ? name.trim() : '';
@@ -442,10 +441,8 @@ function normalizeChargeState(rawBatteryPercent, rawChargingFlag) {
     return null;
   }
 
-  const hasChargeFlag = chargingFlag > 0;
-  const charging = hasChargeFlag;
   const completed = (chargingFlag & CHARGE_FLAG_FULL) === CHARGE_FLAG_FULL
-    || (hasChargeFlag && batteryPercent >= WIRED_FULL_SENTINEL_PERCENT);
+    || ((chargingFlag & CHARGE_FLAG_CHARGING) === 0 && batteryPercent === 100);
 
   if (completed) {
     return {
@@ -455,7 +452,7 @@ function normalizeChargeState(rawBatteryPercent, rawChargingFlag) {
     };
   }
 
-  if (charging) {
+  if ((chargingFlag & CHARGE_FLAG_CHARGING) !== 0) {
     return {
       batteryPercent,
       charging: true,
@@ -468,27 +465,6 @@ function normalizeChargeState(rawBatteryPercent, rawChargingFlag) {
     charging: false,
     chargeStatus: CHARGE_STATUS_IDLE,
   };
-}
-
-function normalizeReadResult(result, previousSnapshot = null) {
-  if (!result || !Number.isFinite(result.batteryPercent)) {
-    return result;
-  }
-
-  if (
-    result.charging
-    && result.batteryPercent >= WIRED_FULL_SENTINEL_PERCENT
-    && previousSnapshot?.batteryPercent === 100
-  ) {
-    return {
-      ...result,
-      batteryPercent: 100,
-      charging: false,
-      chargeStatus: CHARGE_STATUS_FULL,
-    };
-  }
-
-  return result;
 }
 
 // 协议兼容类错误以外，都视为可恢复的底层 IO 故障：读写超时、句柄失效、设备暂时离线等。
@@ -712,7 +688,7 @@ class NativeBatteryRuntime {
     }
   }
 
-  setSuspended(suspended) {
+  async setSuspended(suspended) {
     const nextValue = Boolean(suspended);
     const wasSuspended = this.runtimeSuspended || this.state.mode === 'fallback';
     this.runtimeSuspended = nextValue;
@@ -720,6 +696,9 @@ class NativeBatteryRuntime {
     if (nextValue) {
       this.refreshNonce += 1;
       this.clearPollTimer();
+      if (!wasSuspended) {
+        await this.resetCurrentDevice();
+      }
       return;
     }
 
@@ -869,7 +848,6 @@ class NativeBatteryRuntime {
 
   async commitSuccessfulRead(candidate, result, deviceCount) {
     const previousSnapshot = this.lastStableSnapshot;
-    const normalizedResult = normalizeReadResult(result, previousSnapshot);
     const binding = normalizeDeviceBinding(candidate);
     if (this.hasBoundDevice() && !isAutoSwitchCandidate(candidate, this.preferredBinding)) {
       throw new Error(`候选设备与当前绑定不匹配：VID ${candidate.vendorId}`);
@@ -879,13 +857,13 @@ class NativeBatteryRuntime {
     this.preferredBinding = binding;
     this.consecutiveReadFailures = 0;
     this.lastStableSnapshot = {
-      batteryPercent: normalizedResult.batteryPercent,
-      batteryText: `${normalizedResult.batteryPercent}%`,
-      charging: normalizedResult.charging,
-      chargeStatus: normalizedResult.chargeStatus || (normalizedResult.charging ? CHARGE_STATUS_CHARGING : CHARGE_STATUS_IDLE),
+      batteryPercent: result.batteryPercent,
+      batteryText: `${result.batteryPercent}%`,
+      charging: result.charging,
+      chargeStatus: result.chargeStatus || (result.charging ? CHARGE_STATUS_CHARGING : CHARGE_STATUS_IDLE),
       deviceName: getDeviceProductName(candidate) || 'ATK 设备',
       sampledAt: new Date().toISOString(),
-      protocolName: normalizedResult.protocolName,
+      protocolName: result.protocolName,
     };
 
     this.emitState({
@@ -906,8 +884,8 @@ class NativeBatteryRuntime {
     ) {
       logInfo('原生 HID 已建立稳定连接', {
         deviceName: this.lastStableSnapshot.deviceName,
-        protocolName: normalizedResult.protocolName,
-        batteryPercent: normalizedResult.batteryPercent,
+        protocolName: result.protocolName,
+        batteryPercent: result.batteryPercent,
         deviceCount,
       });
     }
@@ -1204,6 +1182,7 @@ class NativeBatteryRuntime {
 
 module.exports = {
   NativeBatteryRuntime,
+  normalizeChargeState,
   normalizeDeviceBinding,
   getDeviceBindingKey,
   getLooseDeviceBindingKey,

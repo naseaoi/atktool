@@ -126,6 +126,7 @@ function normalizeChargeStatus(value) {
 function merge(patch) {
   const hasChargeStatus = Object.prototype.hasOwnProperty.call(patch, 'chargeStatus');
   const hasCharging = Object.prototype.hasOwnProperty.call(patch, 'charging');
+  const requestedCharging = hasCharging ? Boolean(patch.charging) : state.charging;
   let chargeStatus = normalizeChargeStatus(
     hasChargeStatus
       ? patch.chargeStatus
@@ -136,18 +137,14 @@ function merge(patch) {
   const hasBatteryPercent = Object.prototype.hasOwnProperty.call(patch, 'batteryPercent');
   let batteryPercent = hasBatteryPercent ? patch.batteryPercent : state.batteryPercent;
 
-  if (chargeStatus === 'full' && Number.isFinite(batteryPercent) && batteryPercent >= 95) {
-    batteryPercent = 100;
+  if (!Number.isFinite(batteryPercent) || batteryPercent < 0 || batteryPercent > 100) {
+    batteryPercent = null;
+  } else {
+    batteryPercent = Math.round(batteryPercent);
   }
 
-  if (
-    chargeStatus === 'charging'
-    && Number.isFinite(batteryPercent)
-    && batteryPercent >= 95
-    && state.batteryPercent === 100
-  ) {
-    chargeStatus = 'full';
-    batteryPercent = 100;
+  if (chargeStatus === 'full' && (batteryPercent !== 100 || requestedCharging)) {
+    chargeStatus = requestedCharging ? 'charging' : 'idle';
   }
 
   const nextDeviceName = resolveOverlayDeviceName(patch.deviceName ?? state.deviceName);

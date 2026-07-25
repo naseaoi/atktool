@@ -139,7 +139,7 @@ function renderState(state) {
   document.body.dataset.status = state.status || 'loading';
   document.body.dataset.variant = state.overlayVariant || 'full';
   document.body.dataset.batteryTone = getBatteryTone(batteryPercent, chargeStatus);
-  document.body.dataset.batteryFull = batteryPercent === 100 || chargeStatus === 'full' ? 'true' : 'false';
+  document.body.dataset.batteryFull = batteryPercent === 100 && chargeStatus !== 'charging' ? 'true' : 'false';
   document.body.dataset.batteryRoundEnd = batteryPercent !== null && batteryPercent >= 86 ? 'true' : 'false';
   deviceNameEl.textContent = state.deviceName || '等待连接';
   deviceNameEl.title = state.deviceName || '';

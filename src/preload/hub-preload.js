@@ -4,6 +4,9 @@ let observer = null;
 let sendTimer = null;
 let heartbeatTimer = null;
 
+const FULL_STATUS_PATTERN = /full|fully charged|已充满|充满|充电完成/i;
+const CHARGING_STATUS_PATTERN = /charging|正在充电|充电中|充电/i;
+
 function isVisible(element) {
   if (!element || !(element instanceof HTMLElement)) {
     return false;
@@ -82,6 +85,24 @@ function pickDeviceName(lines) {
   }) || '';
 }
 
+function getChargeStatus(candidate) {
+  if (!candidate) {
+    return 'idle';
+  }
+
+  const contextText = candidate.contextText.join('\n');
+
+  if (candidate.value === 100 && FULL_STATUS_PATTERN.test(contextText)) {
+    return 'full';
+  }
+
+  if (CHARGING_STATUS_PATTERN.test(contextText)) {
+    return 'charging';
+  }
+
+  return 'idle';
+}
+
 function collectState() {
   const bodyText = document.body?.innerText || '';
   const lines = bodyText
@@ -90,13 +111,13 @@ function collectState() {
     .filter(Boolean);
   const percentCandidates = collectPercentCandidates();
   const bestCandidate = percentCandidates[0] || null;
-  const deviceName = pickDeviceName(bestCandidate?.contextText || lines);
+  const deviceNameLines = bestCandidate?.contextText?.length ? bestCandidate.contextText : lines;
+  const deviceName = pickDeviceName(deviceNameLines) || pickDeviceName(lines);
   const hasConnectPrompt = lines.includes('请连接设备') || lines.includes('新增设备');
-  const full = /full|已充满|充满|充电完成|fully charged/i.test(bodyText);
-  const charging = /充电|charging/i.test(bodyText) && !full;
-  const batteryPercent = bestCandidate ? (full && bestCandidate.value >= 95 ? 100 : bestCandidate.value) : null;
+  const chargeStatus = getChargeStatus(bestCandidate);
+  const charging = chargeStatus === 'charging';
+  const batteryPercent = bestCandidate ? bestCandidate.value : null;
   const batteryText = batteryPercent === null ? '--' : `${batteryPercent}%`;
-  const chargeStatus = full && batteryPercent !== null ? 'full' : charging ? 'charging' : 'idle';
 
   let status = 'loading';
   let message = '正在加载 ATK HUB...';

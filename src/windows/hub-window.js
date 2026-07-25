@@ -1,10 +1,12 @@
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { BrowserWindow, session } = require('electron');
+const settingsStore = require('../core/settings-store');
 const overlayState = require('../core/overlay-state');
 const overlaySource = require('../core/overlay-source');
 const windowIcons = require('./window-icons');
 const { HUB_URL, HUB_SESSION_PARTITION } = require('../core/constants');
+const { buildBrowserUserAgent, configureHubWebHid } = require('../hid/hub-web-hid');
 const { logWarn } = require('../utils/logger');
 const { logMemorySnapshot } = require('../utils/memory-log');
 
@@ -23,6 +25,9 @@ function create() {
     return fallbackHubWindow;
   }
 
+  const hubSession = session.fromPartition(HUB_SESSION_PARTITION);
+  configureHubWebHid(hubSession, () => settingsStore.get().preferredHidDevice);
+
   fallbackHubWindow = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -39,6 +44,9 @@ function create() {
     },
   });
 
+  fallbackHubWindow.webContents.setUserAgent(
+    buildBrowserUserAgent(fallbackHubWindow.webContents.getUserAgent())
+  );
   fallbackHubWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   fallbackHubWindow.loadURL(HUB_URL);
   windowIcons.applyTo(fallbackHubWindow, '官网同步窗口');
