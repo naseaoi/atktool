@@ -23,8 +23,8 @@
     <td align="center"><strong>完整版悬浮窗</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/images/manager.png" alt="设备管理页" width="100%" /></td>
-    <td><img src="docs/images/overlay-full.png" alt="完整版悬浮窗" width="100%" /></td>
+    <td><img src="assets/screenshots/manager.png" alt="设备管理页" width="100%" /></td>
+    <td><img src="assets/screenshots/overlay-full.png" alt="完整版悬浮窗" width="100%" /></td>
   </tr>
 </table>
 
@@ -65,7 +65,7 @@ npm run start:verbose
 ## 首次使用
 
 1. 启动应用后，会先显示电量悬浮窗。
-2. 点击悬浮窗中的 `设备管理`。
+2. 从系统托盘菜单打开 `设备管理`。
 3. 在设备管理页点击 `选择并绑定设备`。
 4. 在弹出的 HID 设备列表中选择目标鼠标或接收器。
 5. 绑定成功后，应用会优先记住并读取这只设备的电量，下次启动自动复连。
@@ -103,6 +103,7 @@ npm run start:verbose
 .
 ├─ package.json
 ├─ README.md
+├─ assets/screenshots/           # README 界面截图
 ├─ build/                        # 打包辅助脚本（after-pack 等）
 └─ src
    ├─ main.js                    # 应用入口：单例锁、模块装配、生命周期
@@ -181,8 +182,12 @@ npm start              # 启动 Electron
 npm run start:verbose  # 启动并输出详细 Electron 日志
 npm run check          # 语法检查 + 单元测试
 npm run audit:runtime  # 审计生产依赖
+npm run docs:screenshots # 重新生成 README 界面截图
 npm run build:win      # 打包 Windows NSIS 安装包
+npm run build:win:unpacked # 生成无需安装的 Windows 目录包
 ```
+
+频繁验证打包结果时，建议运行 `npm run build:win:unpacked`，然后直接启动 `dist/win-unpacked/ATK Battery.exe`。这会跳过 NSIS 安装与卸载流程；正式发布时仍使用 `npm run build:win`。
 
 关键模块速查：
 

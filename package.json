@@ -10,13 +10,15 @@
     "check:syntax": "node scripts/check-syntax.js",
     "check": "npm run check:syntax && npm test",
     "audit:runtime": "npm audit --omit=dev --registry=https://registry.npmjs.org/",
-    "build:win": "electron-builder --win nsis --publish never"
+    "docs:screenshots": "electron scripts/capture-screenshots.js",
+    "build:win": "electron-builder --win nsis --publish never",
+    "build:win:unpacked": "electron-builder --win --dir"
   },
   "build": {
     "appId": "atk.overlay.prototype",
     "productName": "ATK Battery",
     "asar": true,
-    "compression": "maximum",
+    "compression": "normal",
     "npmRebuild": false,
     "electronLanguages": [
       "zh-CN",
