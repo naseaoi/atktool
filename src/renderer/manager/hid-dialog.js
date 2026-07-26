@@ -88,10 +88,6 @@ export function renderHidSelectionDialog() {
       metaParts.push(`UsagePage ${device.usagePage}`);
     }
 
-    if (device.guid) {
-      metaParts.push(`GUID ${device.guid}`);
-    }
-
     metaRow.textContent = metaParts.join(' · ');
 
     if (device.matchLevel === 2) {

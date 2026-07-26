@@ -36,7 +36,7 @@ async function boot() {
   });
 
   dom.fallbackButton.addEventListener('click', () => {
-    window.atkManager.openFallback();
+    actions.toggleHubSync();
   });
 
   dom.hidPickerCancelButton.addEventListener('click', () => {
@@ -90,7 +90,7 @@ async function boot() {
     document.body.dataset.ready = 'true';
   });
 
-  if (!stateModule.hasBoundDevice() && initialOverlayState.status === 'loading') {
+  if (!initialPreferences.hubSync && !stateModule.hasBoundDevice() && initialOverlayState.status === 'loading') {
     stateModule.showWaitingForBinding('还没有绑定设备。请先选择并绑定设备，并确保鼠标使用 2.4G 或有线连接。');
   }
 }

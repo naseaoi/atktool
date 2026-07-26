@@ -5,7 +5,6 @@ export async function authorizeDevice() {
   stateModule.setPendingAction('authorize');
 
   try {
-    await window.atkManager.activateStableSource();
     stateModule.applyState({
       status: 'authorizing',
       message: stateModule.hasBoundDevice()
@@ -41,9 +40,9 @@ export async function authorizeDevice() {
 }
 
 export async function refreshBoundDevice() {
-  await window.atkManager.activateStableSource();
+  const hubSync = Boolean(stateModule.getPreferences().hubSync);
 
-  if (!stateModule.hasBoundDevice()) {
+  if (!hubSync && !stateModule.hasBoundDevice()) {
     stateModule.showWaitingForBinding('当前还没有绑定设备，请先选择并绑定设备。');
     return;
   }
@@ -53,12 +52,34 @@ export async function refreshBoundDevice() {
   try {
     stateModule.applyState({
       status: 'loading',
-      message: '正在刷新当前绑定设备...',
+      message: hubSync ? '正在重新同步官网电量...' : '正在刷新当前绑定设备...',
       needsUserAction: false,
       sampledAt: new Date().toISOString(),
-      mode: 'stable',
+      mode: hubSync ? 'fallback' : 'stable',
     });
     await window.atkManager.requestRefresh();
+  } finally {
+    stateModule.setPendingAction('');
+  }
+}
+
+export async function toggleHubSync() {
+  const enabled = Boolean(stateModule.getPreferences().hubSync);
+  stateModule.setPendingAction('hub-sync');
+
+  try {
+    if (enabled) {
+      await window.atkManager.activateStableSource();
+    } else {
+      await window.atkManager.openFallback();
+    }
+  } catch (error) {
+    stateModule.applyState({
+      status: 'error',
+      message: `官网同步切换失败：${error.message || error}`,
+      needsUserAction: true,
+      sampledAt: new Date().toISOString(),
+    });
   } finally {
     stateModule.setPendingAction('');
   }

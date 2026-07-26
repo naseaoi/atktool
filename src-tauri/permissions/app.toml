@@ -1,0 +1,26 @@
+[[permission]]
+identifier = "allow-local-commands"
+description = "Allows bundled application windows to use local commands."
+commands.allow = [
+  "get_preferences",
+  "get_overlay_state",
+  "set_open_at_login",
+  "set_overlay_variant",
+  "toggle_pin",
+  "toggle_variant",
+  "request_refresh",
+  "fit_manager_height",
+  "fit_overlay_height",
+  "hide_overlay",
+  "activate_stable_source",
+  "begin_hid_selection",
+  "pick_hid_device",
+  "cancel_hid_selection",
+  "clear_device_binding",
+  "open_fallback",
+]
+
+[[permission]]
+identifier = "allow-update-fallback-state"
+description = "Allows the ATK HUB window to report synchronized battery state."
+commands.allow = ["update_fallback_state"]

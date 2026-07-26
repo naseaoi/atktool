@@ -1,66 +1,25 @@
 {
   "name": "atktool",
-  "version": "1.0.9",
-  "description": "ATK 鼠标电量悬浮窗原型",
-  "main": "src/main.js",
+  "version": "1.1.0",
+  "description": "ATK / VXE 鼠标电量悬浮窗",
   "scripts": {
-    "start": "electron .",
-    "start:verbose": "electron . --verbose",
-    "test": "node --test",
+    "start": "node scripts/run-rust-tool.js tauri dev",
+    "assets:icons": "node scripts/generate-app-icon.js && node scripts/run-rust-tool.js tauri icon assets/app-icon.png --output src-tauri/icons",
+    "tauri:dev": "node scripts/run-rust-tool.js tauri dev",
+    "tauri:build": "node scripts/run-rust-tool.js tauri build",
+    "docs:screenshots": "node scripts/capture-screenshots.js",
+    "test": "node --test && node scripts/run-rust-tool.js cargo test --manifest-path src-tauri/Cargo.toml --lib",
     "check:syntax": "node scripts/check-syntax.js",
     "check": "npm run check:syntax && npm test",
     "audit:runtime": "npm audit --omit=dev --registry=https://registry.npmjs.org/",
-    "docs:screenshots": "electron scripts/capture-screenshots.js",
-    "build:win": "electron-builder --win nsis --publish never",
-    "build:win:unpacked": "electron-builder --win --dir"
-  },
-  "build": {
-    "appId": "atk.overlay.prototype",
-    "productName": "ATK Battery",
-    "asar": true,
-    "compression": "normal",
-    "npmRebuild": false,
-    "electronLanguages": [
-      "zh-CN",
-      "en-US"
-    ],
-    "afterPack": "build/after-pack.js",
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "src/**/*",
-      "package.json"
-    ],
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "artifactName": "${productName}-Setup-${version}.${ext}"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "perMachine": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "ATK Battery"
-    }
+    "build:win": "node scripts/build-windows.js bundle",
+    "build:win:unpacked": "node scripts/build-windows.js unpacked"
   },
   "keywords": [],
   "author": "",
   "devDependencies": {
-    "electron": "^41.10.3",
-    "electron-builder": "^26.15.7"
+    "@tauri-apps/cli": "^2.11.4"
   },
   "license": "ISC",
-  "type": "commonjs",
-  "dependencies": {
-    "node-hid": "^3.4.0"
-  }
+  "type": "commonjs"
 }

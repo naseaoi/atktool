@@ -241,6 +241,12 @@ body[data-status='unsupported'] .status-chip {
   background: rgba(255, 138, 122, 0.1);
 }
 
+.secondary-button[data-active='true'] {
+  color: var(--accent);
+  border-color: rgba(126, 230, 197, 0.42);
+  background: rgba(126, 230, 197, 0.12);
+}
+
 .dialog-backdrop {
   position: fixed;
   inset: 0;

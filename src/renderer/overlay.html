@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; script-src 'self';" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ATK 电量悬浮窗</title>
     <link rel="stylesheet" href="./overlay.css" />
@@ -92,6 +92,7 @@
       </section>
     </main>
 
+    <script src="./runtime-bridge.js"></script>
     <script src="./overlay.js"></script>
   </body>
 </html>

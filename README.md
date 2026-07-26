@@ -1,19 +1,20 @@
 # ATK 电量悬浮窗
 
-一个基于 Electron 的 Windows 桌面工具，用于显示 ATK / VXE 鼠标电量。
+面向 Windows 11 的轻量桌面工具，显示 ATK / VXE 鼠标电量。
 
-项目默认优先使用原生 `HID`（`node-hid`）在独立 `utilityProcess` 子进程中直连读取电量；当当前设备协议暂未适配时，可切换到“同步官网电量”方案继续使用。
+基于 Tauri 2、Rust、系统 WebView2 和 `hidapi`。HID 协议读取、设备枚举、后台轮询、托盘和窗口生命周期全部运行在 Rust 侧，安装包不携带 Chromium 或 Node.js 运行时。
 
-## 功能特性
+## 功能
 
-- 原生 `HID` 子进程直连读取鼠标电量，主进程与 HID 驱动隔离，偶发崩溃不影响主窗口
-- 完整版 / 简略版悬浮窗切换，位置记忆
-- 托盘图标动态渲染当前电量数字与充电态
-- 设备管理页支持设备选择、绑定、更换绑定、解绑与状态查看
-- 支持记住上次成功连接的设备并在下次启动时自动复连
-- 支持系统休眠 / 唤醒后自动重连
-- 支持开机启动与悬浮窗置顶
-- 协议未适配时可切换到“同步官网电量”方案
+- COMPX / HECHI 原生 HID 电量读取，双协议自动探测与降级
+- 设备选择、绑定、更换和自动复连
+- 完整版 / 简略版悬浮窗，位置记忆
+- 设备管理页位置与宽度记忆
+- 托盘图标动态显示电量数字（Bahnschrift 字体，满电显示 `F`）
+- 设备插拔即时重扫，系统休眠恢复后自动重连
+- 前台 10 秒轮询；后台按充电态和电量调整为 2、5 或 10 分钟
+- 单实例、开机启动、悬浮窗置顶
+- ATK HUB 官网同步电量，开启后持续生效并在重启后自动恢复
 
 ## 界面截图
 
@@ -28,183 +29,87 @@
   </tr>
 </table>
 
-## 技术栈
+## 电量来源
 
-- Electron（主进程 + 渲染进程 + `utilityProcess` 子进程）
-- `node-hid` 原生 HID
-- 原生 HTML / CSS / JavaScript
-- CommonJS
+应用有两种采集模式，同一时刻只有一种生效。
 
-## 运行环境
+**本地 HID 直连**（默认）：绑定设备后由 Rust 工作线程直接读取 COMPX 或 HECHI 协议。绑定的设备身份包含 VID、PID、产品名和接口签名，接口签名变化时按同产品降级匹配。
+
+**官网同步**：协议未适配的型号可开启，由后台 WebView 窗口从 `hub.atk.pro` 采集。开启后写入配置持续生效，关闭窗口只是隐藏，同步继续运行；重启应用会自动恢复。三种操作会退出同步模式：手动关闭、绑定新设备、解绑设备。
+
+## 开发环境
 
 - Windows 11
-- Node.js 18+
-- npm 9+
-- 鼠标建议使用 `2.4G` 或有线模式
+- Node.js 18+ 与 npm 9+
+- Rust stable（MSVC 目标）
+- Visual Studio Build Tools：使用 C++ 的桌面开发
+- Microsoft Edge WebView2 Runtime
 
-## 快速开始
+Rust 工具链可安装到非系统盘。npm 脚本会读取 Windows 用户环境变量中的 `CARGO_HOME` 和 `RUSTUP_HOME`，无需当前终端已刷新 `Path`。
 
-### 1. 安装依赖
+## 开发与构建
 
-```bash
+```powershell
 npm install
-```
-
-### 2. 启动项目
-
-```bash
 npm start
 ```
 
-如需查看更详细的 Electron 启动日志，可使用：
-
-```bash
-npm run start:verbose
+```powershell
+npm run check
+npm run build:win:unpacked
+npm run build:win
 ```
 
-## 首次使用
+- `npm start`：启动 Tauri 开发版本
+- `npm run check`：JavaScript 语法检查、桥接测试和 Rust 单元测试
+- `npm run build:win:unpacked`：仅编译 release 可执行文件，输出在 `dist/`
+- `npm run build:win`：生成 NSIS 安装包，输出在 `dist/`
 
-1. 启动应用后，会先显示电量悬浮窗。
-2. 从系统托盘菜单打开 `设备管理`。
-3. 在设备管理页点击 `选择并绑定设备`。
-4. 在弹出的 HID 设备列表中选择目标鼠标或接收器。
-5. 绑定成功后，应用会优先记住并读取这只设备的电量，下次启动自动复连。
-6. 如果当前型号协议暂未适配，可点击 `同步官网电量` 继续使用。
-
-## 使用说明
-
-### 悬浮窗
-
-- 支持完整版和简略版两种显示模式
-- 支持拖动位置，切换模式时会保持位置同步
-- 支持置顶显示
-- 支持托盘显示 / 隐藏悬浮窗
-
-### 设备管理
-
-- 查看当前连接状态、设备名、协议、最近更新时间
-- 选择并绑定设备，或更换当前绑定设备
-- 手动刷新当前绑定设备
-- 解绑当前设备
-- 切换悬浮窗模式
-- 设置开机启动
-
-### 托盘菜单
-
-- 显示 / 隐藏悬浮窗
-- 打开设备管理
-- 刷新直连状态
-- 查看当前电量、设备与协议状态
-- 切换置顶、简略悬浮窗、开机启动
+release 使用 LTO、`opt-level = "z"`、单 codegen unit、panic abort 和符号剥离。安装包不内置 WebView2，复用 Windows 11 系统运行时。
 
 ## 项目结构
 
 ```text
 .
-├─ package.json
-├─ README.md
-├─ assets/screenshots/           # README 界面截图
-├─ build/                        # 打包辅助脚本（after-pack 等）
-└─ src
-   ├─ main.js                    # 应用入口：单例锁、模块装配、生命周期
-   ├─ core/                      # 核心状态与业务动作
-   │  ├─ battery-runtime.js      #   HID 运行时句柄持有
-   │  ├─ constants.js            #   常量
-   │  ├─ device-actions.js       #   设备绑定/解绑/置顶切换等动作
-   │  ├─ overlay-source.js       #   悬浮窗数据源切换（manager / hub）
-   │  ├─ overlay-state.js        #   悬浮窗状态总线
-   │  ├─ settings-store.js       #   设置订阅与合并
-   │  └─ store.js                #   settings.json 持久化
-   ├─ device/                    # 设备识别与选择
-   │  ├─ binding-identity.js     #   设备绑定身份纯函数
-   │  ├─ device-binding.js       #   绑定偏好
-   │  ├─ device-name.js          #   设备名归一化
-   │  └─ hid-selection.js        #   HID 列表选择
-   ├─ hid/                       # 原生 HID 协议层
-   │  ├─ native-hid.js           #   协议核心实现
-   │  ├─ native-hid-host.js      #   主进程端 utilityProcess 编排
-   │  └─ native-hid-worker.js    #   子进程端：隔离 node-hid 崩溃
-   ├─ ipc/                       # IPC 通道
-   │  ├─ index.js                #   IPC 聚合注册
-   │  ├─ manager-ipc.js          #   设备管理页通道
-   │  ├─ overlay-ipc.js          #   悬浮窗通道
-   │  └─ hub-ipc.js              #   同步官网电量通道
-   ├─ preload/                   # 预加载脚本
-   │  ├─ manager-preload.js
-   │  ├─ overlay-preload.js
-   │  └─ hub-preload.js
-   ├─ renderer/                  # 渲染进程 UI
-   │  ├─ manager.html / .css / .js
-   │  ├─ manager/                #   设备管理页拆分
-   │  │  ├─ actions.js
-   │  │  ├─ dom-refs.js
-   │  │  ├─ hid-dialog.js
-   │  │  ├─ state.js
-   │  │  └─ ui-utils.js
-   │  ├─ overlay.html / .css / .js
-   │  └─ hid-shared.js           #   设备管理页 HID 展示工具
-   ├─ system/                    # 系统层集成
-   │  ├─ login-item.js           #   开机启动
-   │  ├─ power-monitor.js        #   休眠/唤醒重连
-   │  └─ runtime-diagnostics.js  #   主进程崩溃兜底自重启
-   ├─ tray/                      # 系统托盘
-   │  ├─ tray.js                 #   托盘菜单
-   │  ├─ tray-icon-renderer.js   #   图标缓存与渲染
-   │  └─ png-encoder.js          #   托盘电量 PNG 生成
-   ├─ utils/                     # 通用工具
-   │  ├─ logger.js               #   文件 + 控制台日志
-   │  ├─ memory-log.js           #   内存快照
-   │  └─ window-helpers.js       #   窗口显隐辅助
-   └─ windows/                   # 主进程窗口管理
-      ├─ overlay-window.js
-      ├─ manager-window.js
-      ├─ hub-window.js
-      └─ window-icons.js
+├─ assets/screenshots/        # README 界面截图
+├─ scripts/                   # 前端检查、图标生成与 Rust 工具启动适配
+├─ src/renderer/              # HTML / CSS / JavaScript 界面
+│  ├─ runtime-bridge.js       # Tauri command / event 到渲染层 API 的映射
+│  ├─ hid-shared.js           # 设备命名与排序的共享逻辑
+│  ├─ manager/                # 设备管理页模块
+│  └─ overlay.js              # 悬浮窗
+├─ src-tauri/
+│  ├─ capabilities/           # Tauri 权限边界
+│  ├─ scripts/                # ATK HUB 只读状态采集脚本
+│  └─ src/
+│     ├─ battery_service.rs   # HID 工作线程、轮询、退避与状态广播
+│     ├─ device.rs            # HID 枚举、设备身份和候选评分
+│     ├─ protocol.rs          # COMPX / HECHI 协议
+│     ├─ commands.rs          # 前端命令边界
+│     ├─ hub.rs               # 官网同步窗口与持久同步开关
+│     ├─ hub_permissions.rs   # Edge WebHID 授权导入
+│     ├─ state.rs             # 设置持久化与运行状态
+│     ├─ system_tray.rs       # 托盘菜单和动态电量图标
+│     ├─ tray_text.rs         # GDI 文字渲染
+│     ├─ window_manager.rs    # 窗口生命周期与位置记忆
+│     └─ windows_integration.rs # 设备变化与电源消息
+└─ test/                      # 渲染层桥接测试
 ```
 
-## 数据存储
+## 数据与安全边界
 
-应用会将本地配置写入 Electron `userData` 目录下的 `settings.json`，内容包括：
+配置写入 Tauri 应用配置目录的 `settings.json`，首次启动兼容读取旧版 `%APPDATA%\atktool\settings.json`。
 
-- 悬浮窗位置
-- 设备偏好
-- 记住的显示设备名
-- 是否置顶
-- 是否开机启动
-- 当前悬浮窗模式
+官网同步窗口仅允许导航到 `https://hub.atk.pro/`。状态回传必须来自该窗口和来源，且同步开关为开启状态，Rust 侧校验文本长度、电量范围与状态枚举后才接受。
 
-## 开发说明
-
-当前可用脚本：
-
-```bash
-npm start              # 启动 Electron
-npm run start:verbose  # 启动并输出详细 Electron 日志
-npm run check          # 语法检查 + 单元测试
-npm run audit:runtime  # 审计生产依赖
-npm run docs:screenshots # 重新生成 README 界面截图
-npm run build:win      # 打包 Windows NSIS 安装包
-npm run build:win:unpacked # 生成无需安装的 Windows 目录包
-```
-
-频繁验证打包结果时，建议运行 `npm run build:win:unpacked`，然后直接启动 `dist/win-unpacked/ATK Battery.exe`。这会跳过 NSIS 安装与卸载流程；正式发布时仍使用 `npm run build:win`。
-
-关键模块速查：
-
-- [src/main.js](src/main.js)：单例锁、模块装配、应用生命周期
-- [src/hid/](src/hid/)：原生 HID 协议层，主进程与 `utilityProcess` 子进程通信
-- [src/core/battery-runtime.js](src/core/battery-runtime.js) + [src/core/overlay-state.js](src/core/overlay-state.js)：电量运行时与状态总线
-- [src/renderer/manager.js](src/renderer/manager.js) + [src/renderer/manager/](src/renderer/manager/)：设备管理页（枚举、授权、轮询、重试）
-- [src/renderer/overlay.js](src/renderer/overlay.js)：悬浮窗 UI 状态渲染
-- [src/tray/tray.js](src/tray/tray.js)：托盘菜单与图标更新
-- [src/system/runtime-diagnostics.js](src/system/runtime-diagnostics.js)：主进程异常兜底自重启
+渲染层通过 capability 白名单访问命令，本地窗口与 HUB 窗口的命令集互不重叠。
 
 ## 已知限制
 
-- 目前只覆盖了已分析并适配的部分设备协议，未覆盖型号会显示为 `待适配`
-- 蓝牙模式下通常较难稳定读取，建议优先使用 `2.4G` 或有线连接
-- 多设备同时连接时，会优先使用上次成功连接的设备，否则按鼠标特征自动选择
-- “同步官网电量”方案依赖官网页面结构，官网改版后可能需要重新适配
+- 只覆盖已适配的设备协议，未覆盖型号显示为「待适配」，可改用官网同步。
+- 蓝牙模式通常无法稳定读取，建议使用 2.4G 接收器或有线连接。
+- 官网同步依赖 hub.atk.pro 的页面结构，官网改版后可能需要更新采集规则。
+- 托盘图标文字渲染依赖 Windows GDI 与 Bahnschrift 字体，非 Windows 平台不绘制数字。
 
 ## License
 

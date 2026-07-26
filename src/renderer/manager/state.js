@@ -23,6 +23,7 @@ let preferences = {
   openAtLogin: false,
   displayDeviceName: '',
   overlayVariant: 'full',
+  hubSync: false,
 };
 let pendingAction = '';
 let fitHeightTimer = null;
@@ -51,13 +52,16 @@ export function setPendingAction(action) {
 export function updateActionButtons() {
   const bound = hasBoundDevice();
   const busy = Boolean(pendingAction);
+  const hubSync = Boolean(preferences.hubSync);
 
   dom.authorizeButton.textContent = bound ? '更换绑定设备' : '选择并绑定设备';
   dom.refreshButton.textContent = '刷新当前设备';
   dom.unbindButton.textContent = '解绑当前设备';
+  dom.fallbackButton.textContent = hubSync ? '停止同步官网电量' : '同步官网电量';
+  dom.fallbackButton.dataset.active = hubSync ? 'true' : 'false';
 
   dom.authorizeButton.disabled = busy;
-  dom.refreshButton.disabled = busy || !bound;
+  dom.refreshButton.disabled = busy || (!bound && !hubSync);
   dom.unbindButton.disabled = busy || !bound;
   dom.fallbackButton.disabled = busy;
 }
@@ -135,6 +139,7 @@ export function applyPreferences(patch) {
     displayDeviceName: shared.normalizeDeviceName(patch.displayDeviceName ?? preferences.displayDeviceName),
     overlayVariant: normalizeOverlayVariant(patch.overlayVariant ?? preferences.overlayVariant),
     openAtLogin: Boolean(patch.openAtLogin ?? preferences.openAtLogin),
+    hubSync: Boolean(patch.hubSync ?? preferences.hubSync),
   };
 
   if (hasPreferredDevicePatch) {

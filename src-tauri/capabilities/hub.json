@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "hub-state",
+  "description": "ATK HUB state bridge",
+  "windows": ["hub"],
+  "remote": {
+    "urls": ["https://hub.atk.pro/*"]
+  },
+  "permissions": ["allow-update-fallback-state"]
+}

@@ -1,173 +1,261 @@
 const fs = require('node:fs/promises');
+const http = require('node:http');
+const os = require('node:os');
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { spawn, spawnSync } = require('node:child_process');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const OUTPUT_DIR = path.join(ROOT_DIR, 'assets', 'screenshots');
-const SAMPLE_TIME = '2026-07-26T12:18:36.000Z';
+const EDGE_PATHS = [
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+];
+const SAMPLE_TIME = new Date().toISOString();
 
 const preferredDevice = {
   vendorId: 0x373b,
-  productId: 0x1054,
-  productName: 'VXE R1 Pro Max',
-  usagePage: 0xff00,
-  usage: 1,
+  productId: 0x11fe,
+  productName: 'Wireless mouse 8k NANO dongle-L',
+  collectionSignature: '1/65282/2/769/541505796617',
 };
 
 const preferences = {
   openAtLogin: true,
-  displayDeviceName: preferredDevice.productName,
+  displayDeviceName: 'ATK A9 Ultra Max',
   overlayVariant: 'full',
   preferredHidDevice: preferredDevice,
+  hubSync: true,
 };
 
 const overlayState = {
   status: 'connected',
-  message: '已通过本地 HID 获取设备电量。',
-  batteryPercent: 82,
-  batteryText: '82%',
-  deviceName: preferredDevice.productName,
+  message: '设备已连接，正在读取电量',
+  batteryPercent: 90,
+  batteryText: '90%',
+  deviceName: 'ATK A9 Ultra Max',
   charging: false,
   chargeStatus: 'idle',
   needsUserAction: false,
   sampledAt: SAMPLE_TIME,
-  protocolName: 'COMPX 直连',
-  mode: 'stable',
-  grantedDevicesCount: 3,
+  protocolName: '官网同步电量',
+  mode: 'fallback',
+  grantedDevicesCount: 1,
   overlayVariant: 'full',
   alwaysOnTop: true,
 };
 
-function registerIpcMocks() {
-  ipcMain.handle('manager:get-preferences', () => preferences);
-  ipcMain.handle('manager:get-overlay-state', () => overlayState);
-  ipcMain.handle('manager:set-open-at-login', (_event, enabled) => ({
-    ...preferences,
-    openAtLogin: Boolean(enabled),
-  }));
-  ipcMain.handle('manager:set-overlay-variant', (_event, overlayVariant) => ({
-    ...preferences,
-    overlayVariant,
-  }));
-  ipcMain.handle('manager:request-refresh', () => true);
-  ipcMain.handle('manager:activate-stable-source', () => true);
-  ipcMain.handle('manager:begin-hid-selection', () => false);
-  ipcMain.handle('manager:end-hid-selection', () => true);
-  ipcMain.handle('manager:pick-hid-device', () => preferences);
-  ipcMain.handle('manager:cancel-hid-selection', () => true);
-  ipcMain.handle('manager:clear-device-binding', () => ({
-    ...preferences,
-    displayDeviceName: '',
-    preferredHidDevice: null,
-  }));
-  ipcMain.handle('overlay:get-state', () => overlayState);
-  ipcMain.handle('overlay:toggle-pin', () => ({
-    ...overlayState,
-    alwaysOnTop: !overlayState.alwaysOnTop,
-  }));
-  ipcMain.handle('overlay:toggle-variant', () => ({
-    ...overlayState,
-    overlayVariant: 'compact',
-  }));
-  ipcMain.on('manager:fit-height', () => {});
-  ipcMain.on('manager:open-fallback', () => {});
-  ipcMain.on('overlay:fit-height', () => {});
-  ipcMain.on('overlay:hide', () => {});
-}
+const bridgeSource = `
+(() => {
+  const preferences = ${JSON.stringify(preferences)};
+  const overlayState = ${JSON.stringify(overlayState)};
+  const noop = () => () => {};
+  window.atkManager = {
+    getPreferences: async () => preferences,
+    getOverlayState: async () => overlayState,
+    setOpenAtLogin: async (enabled) => ({ ...preferences, openAtLogin: Boolean(enabled) }),
+    setOverlayVariant: async (overlayVariant) => ({ ...preferences, overlayVariant }),
+    requestRefresh: async () => true,
+    fitHeight: () => {},
+    activateStableSource: async () => true,
+    beginHidSelection: async () => false,
+    pickHidDevice: async () => preferences,
+    cancelHidSelection: async () => true,
+    clearDeviceBinding: async () => ({ ...preferences, preferredHidDevice: null }),
+    openFallback: async () => true,
+    onPreferencesChanged: noop,
+    onOverlayStateChanged: noop,
+    onHidSelectionChanged: noop,
+  };
+  window.atkOverlay = {
+    getInitialState: async () => overlayState,
+    onStateChange: noop,
+    requestRefresh: async () => true,
+    togglePin: async () => ({ ...overlayState, alwaysOnTop: !overlayState.alwaysOnTop }),
+    toggleVariant: async () => ({ ...overlayState, overlayVariant: 'compact' }),
+    fitHeight: () => {},
+    hideOverlay: () => {},
+  };
+})();
+`;
 
-async function waitForRenderer(window, readyExpression) {
-  await window.webContents.executeJavaScript(`
-    new Promise((resolve, reject) => {
-      const deadline = Date.now() + 5000;
-      const check = () => {
-        if (${readyExpression}) {
-          document.fonts.ready.then(resolve);
-          return;
-        }
-        if (Date.now() >= deadline) {
-          reject(new Error('Renderer readiness timed out'));
-          return;
-        }
-        setTimeout(check, 25);
-      };
-      check();
-    })
-  `);
-}
+const contentTypes = new Map([
+  ['.css', 'text/css; charset=utf-8'],
+  ['.html', 'text/html; charset=utf-8'],
+  ['.js', 'text/javascript; charset=utf-8'],
+  ['.png', 'image/png'],
+  ['.svg', 'image/svg+xml'],
+]);
 
-async function saveWindowCapture(window, outputName) {
-  const image = await window.webContents.capturePage();
-  if (image.isEmpty()) {
-    throw new Error(`Screenshot is empty: ${outputName}`);
+async function findEdge() {
+  for (const candidate of EDGE_PATHS) {
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch (_error) {
+    }
   }
-  await fs.writeFile(path.join(OUTPUT_DIR, outputName), image.toPNG());
+  throw new Error('Microsoft Edge not found');
 }
 
-async function captureManager() {
-  const window = new BrowserWindow({
-    width: 880,
-    height: 720,
-    useContentSize: true,
-    show: false,
-    backgroundColor: '#081219',
-    webPreferences: {
-      preload: path.join(ROOT_DIR, 'src', 'preload', 'manager-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      backgroundThrottling: false,
-    },
-  });
-
-  await window.loadFile(path.join(ROOT_DIR, 'src', 'renderer', 'manager.html'));
-  await waitForRenderer(window, "document.body.dataset.ready === 'true'");
-
-  const contentHeight = await window.webContents.executeJavaScript(`
-    Math.ceil(document.querySelector('.app-shell').getBoundingClientRect().bottom + 28)
-  `);
-  window.setContentSize(880, contentHeight);
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  await saveWindowCapture(window, 'manager.png');
-  return window;
+function injectBridge(html, pathname) {
+  const marker = '    <script src="./runtime-bridge.js"></script>';
+  if (!html.includes(marker)) {
+    throw new Error('Screenshot bridge marker not found');
+  }
+  const withBridge = html.replace(
+    marker,
+    `    <script src="/__screenshot-bridge.js"></script>\n${marker}`,
+  );
+  if (pathname !== '/src/renderer/overlay.html') {
+    return withBridge;
+  }
+  return withBridge.replace('</head>', '    <style>html, body { width: 360px; }</style>\n  </head>');
 }
 
-async function captureOverlay() {
-  const window = new BrowserWindow({
-    width: 360,
-    height: 262,
-    useContentSize: true,
-    show: false,
-    frame: false,
-    transparent: true,
-    hasShadow: false,
-    webPreferences: {
-      preload: path.join(ROOT_DIR, 'src', 'preload', 'overlay-preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      backgroundThrottling: false,
-    },
-  });
+async function readAsset(pathname) {
+  const relativePath = decodeURIComponent(pathname).replace(/^\/+/, '');
+  const absolutePath = path.resolve(ROOT_DIR, relativePath);
+  const rootPrefix = `${ROOT_DIR}${path.sep}`;
+  if (!absolutePath.startsWith(rootPrefix)) {
+    throw new Error('Asset path is outside the project');
+  }
+  let content = await fs.readFile(absolutePath);
+  if (pathname === '/src/renderer/manager.html' || pathname === '/src/renderer/overlay.html') {
+    content = Buffer.from(injectBridge(content.toString('utf8'), pathname));
+  }
+  return {
+    content,
+    contentType: contentTypes.get(path.extname(absolutePath)) || 'application/octet-stream',
+  };
+}
 
-  await window.loadFile(path.join(ROOT_DIR, 'src', 'renderer', 'overlay.html'));
-  await waitForRenderer(window, "document.getElementById('batteryText').textContent === '82%'");
-  await new Promise((resolve) => setTimeout(resolve, 1300));
-  await saveWindowCapture(window, 'overlay-full.png');
-  return window;
+async function startServer() {
+  const server = http.createServer(async (request, response) => {
+    try {
+      const { pathname } = new URL(request.url, 'http://127.0.0.1');
+      if (pathname === '/__screenshot-bridge.js') {
+        response.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+        response.end(bridgeSource);
+        return;
+      }
+      const asset = await readAsset(pathname);
+      response.writeHead(200, { 'Content-Type': asset.contentType });
+      response.end(asset.content);
+    } catch (_error) {
+      response.writeHead(404);
+      response.end();
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  return server;
+}
+
+function cropPng(source, destination, width, height) {
+  const script = path.join(ROOT_DIR, 'scripts', 'crop-png.ps1');
+  const result = spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-File',
+    script,
+    '-Source',
+    source,
+    '-Destination',
+    destination,
+    '-Width',
+    String(width),
+    '-Height',
+    String(height),
+  ], { windowsHide: true, stdio: 'inherit' });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(`PNG crop failed: ${result.status}`);
+  }
+}
+
+async function capture(
+  edgePath,
+  baseUrl,
+  page,
+  outputName,
+  width,
+  height,
+  transparent = false,
+  cropWidth = null,
+) {
+  const profileDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atktool-screenshots-'));
+  const outputPath = path.join(OUTPUT_DIR, outputName);
+  const screenshotPath = cropWidth ? `${outputPath}.uncropped.png` : outputPath;
+  const arguments = [
+    '--headless=new',
+    '--no-sandbox',
+    '--disable-gpu',
+    '--disable-gpu-compositing',
+    '--disable-features=VizDisplayCompositor',
+    '--hide-scrollbars',
+    '--no-first-run',
+    '--disable-default-apps',
+    '--run-all-compositor-stages-before-draw',
+    '--force-device-scale-factor=1.25',
+    `--window-size=${width},${height}`,
+    '--virtual-time-budget=2000',
+    `--user-data-dir=${profileDir}`,
+    `--screenshot=${screenshotPath}`,
+  ];
+  if (transparent) {
+    arguments.push('--default-background-color=00000000');
+  }
+  arguments.push(`${baseUrl}/src/renderer/${page}`);
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn(edgePath, arguments, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+      let errorOutput = '';
+      child.stderr.on('data', (chunk) => {
+        errorOutput += chunk.toString();
+      });
+      child.once('error', reject);
+      child.once('exit', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`Edge screenshot failed (${code}): ${errorOutput.trim()}`));
+        }
+      });
+    });
+    if (cropWidth) {
+      cropPng(screenshotPath, outputPath, cropWidth, Math.round(height * 1.25));
+      await fs.rm(screenshotPath, { force: true });
+    }
+  } finally {
+    await fs.rm(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+}
+
+async function closeServer(server) {
+  await new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
 }
 
 async function main() {
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
-  registerIpcMocks();
-  const windows = [await captureManager(), await captureOverlay()];
-  windows.forEach((window) => window.destroy());
+  const edgePath = await findEdge();
+  const server = await startServer();
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  try {
+    await capture(edgePath, baseUrl, 'manager.html', 'manager.png', 880, 759);
+    await capture(edgePath, baseUrl, 'overlay.html', 'overlay-full.png', 500, 262, true, 450);
+  } finally {
+    await closeServer(server);
+  }
 }
 
-app.commandLine.appendSwitch('force-device-scale-factor', '1.25');
-app.disableHardwareAcceleration();
-
-app.whenReady()
-  .then(main)
-  .then(() => app.quit())
-  .catch((error) => {
-    console.error(error);
-    app.exit(1);
-  });
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

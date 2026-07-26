@@ -1,9 +1,7 @@
 @echo off
 setlocal
 
-if not defined ELECTRON_MIRROR set "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/"
-
-if not exist node_modules\electron-builder (
+if not exist node_modules\@tauri-apps\cli\tauri.js (
   call npm install
   if errorlevel 1 exit /b %errorlevel%
 )
