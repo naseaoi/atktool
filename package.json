@@ -1,6 +1,6 @@
 {
   "name": "atktool",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "ATK / VXE 鼠标电量悬浮窗",
   "scripts": {
     "start": "node scripts/run-rust-tool.js tauri dev",

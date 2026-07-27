@@ -20,12 +20,17 @@ const POLL_VISIBLE: Duration = Duration::from_secs(10);
 const POLL_HIDDEN_DEFAULT: Duration = Duration::from_secs(10 * 60);
 const POLL_HIDDEN_MEDIUM: Duration = Duration::from_secs(5 * 60);
 const POLL_HIDDEN_LOW: Duration = Duration::from_secs(2 * 60);
+const DEVICE_RECONNECT_INTERVAL: Duration = Duration::from_secs(15);
 const DEVICE_WATCH_INTERVAL: Duration = Duration::from_secs(2 * 60);
 const FAILURE_RESET_LIMIT: u32 = 3;
 
 fn is_placeholder_device_name(name: &str) -> bool {
     let compact = name.split_whitespace().collect::<String>();
     compact.is_empty() || compact.eq_ignore_ascii_case("ATK设备")
+}
+
+fn device_list_changed(previous: &[String], current: &[String]) -> bool {
+    previous != current
 }
 
 enum ServiceCommand {
@@ -228,7 +233,7 @@ impl Runtime {
                 count,
             );
             self.emit(overlay);
-            return self.next_poll_interval();
+            return DEVICE_RECONNECT_INTERVAL;
         }
         let allow_fallback =
             scan_devices || self.protocol.is_none() || self.failures >= FAILURE_RESET_LIMIT;
@@ -337,7 +342,7 @@ impl Runtime {
             return false;
         };
         let paths: Vec<_> = devices.iter().map(NativeDevice::device_id).collect();
-        let changed = !self.last_paths.is_empty() && paths != self.last_paths;
+        let changed = device_list_changed(&self.last_paths, &paths);
         self.last_paths = paths;
         changed
     }
@@ -421,7 +426,8 @@ fn worker_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::is_placeholder_device_name;
+    use super::{device_list_changed, is_placeholder_device_name, DEVICE_RECONNECT_INTERVAL};
+    use std::time::Duration;
 
     #[test]
     fn recognizes_legacy_device_name_placeholders() {
@@ -429,5 +435,19 @@ mod tests {
         assert!(is_placeholder_device_name("ATK设备"));
         assert!(is_placeholder_device_name(""));
         assert!(!is_placeholder_device_name("ATK X1 Pro"));
+    }
+
+    #[test]
+    fn detects_first_device_after_empty_startup_scan() {
+        assert!(device_list_changed(&[], &["receiver".to_owned()]));
+        assert!(!device_list_changed(
+            &["receiver".to_owned()],
+            &["receiver".to_owned()]
+        ));
+    }
+
+    #[test]
+    fn retries_missing_bound_device_promptly() {
+        assert_eq!(DEVICE_RECONNECT_INTERVAL, Duration::from_secs(15));
     }
 }
