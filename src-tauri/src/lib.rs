@@ -11,6 +11,7 @@ mod protocol;
 mod state;
 mod system_tray;
 mod tray_text;
+mod update_check;
 mod window_manager;
 mod windows_integration;
 
@@ -61,6 +62,7 @@ pub fn run() {
             )?);
 
             system_tray::create(app.handle())?;
+            update_check::start(app.handle());
             if preferences.overlay_visible {
                 window_manager::show_overlay(app.handle())?;
             }
@@ -68,6 +70,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            update_check::get_update_state,
+            update_check::check_update,
+            update_check::open_release_page,
+            update_check::open_repository,
             commands::get_preferences,
             commands::get_overlay_state,
             commands::set_open_at_login,

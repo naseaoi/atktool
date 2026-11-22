@@ -2,6 +2,10 @@
 identifier = "allow-local-commands"
 description = "Allows bundled application windows to use local commands."
 commands.allow = [
+  "get_update_state",
+  "check_update",
+  "open_release_page",
+  "open_repository",
   "get_preferences",
   "get_overlay_state",
   "set_open_at_login",

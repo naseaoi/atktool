@@ -797,3 +797,62 @@ input[type='range']:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---------- 版本页脚 ---------- */
+
+.about {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 28px;
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.about__spacer {
+  flex: 1;
+}
+
+.about__status:not(:empty)::before {
+  content: '·';
+  margin-right: 12px;
+}
+
+.about__link,
+.about__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 5px;
+  color: var(--text-soft);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.about__link svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.about__link:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.about__link:disabled {
+  opacity: 0.5;
+}
+
+.about__action--accent {
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.about__action--accent:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}

@@ -48,6 +48,7 @@ pub struct Preferences {
     pub last_battery: Option<BatterySnapshot>,
     pub discharge_anchor: Option<BatterySnapshot>,
     pub low_battery_alerted: [bool; 2],
+    pub notified_update_version: Option<String>,
 }
 
 /// 最近一次成功读到的电量，断连后悬浮窗仍以离线态显示它。
@@ -81,6 +82,7 @@ impl Default for Preferences {
             last_battery: None,
             discharge_anchor: None,
             low_battery_alerted: [false; 2],
+            notified_update_version: None,
         }
     }
 }

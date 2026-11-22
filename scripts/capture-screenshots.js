@@ -12,7 +12,7 @@ const EDGE_PATHS = [
 ];
 const SAMPLE_TIME = new Date().toISOString();
 // 与管理页实际内容高度一致，内容变化时同步调整。
-const MANAGER_HEIGHT = 502;
+const MANAGER_HEIGHT = 542;
 
 const preferredDevice = {
   vendorId: 0x373b,
@@ -106,7 +106,13 @@ const bridgeSource = `
     notifyPreferences(preferences);
     return preferences;
   };
+  const updateState = { currentVersion: ${JSON.stringify(require('../package.json').version)}, checking: false, checkedAt: '2026-01-01T00:00:00Z', latestVersion: null, releaseUrl: null, error: null };
   window.atkManager = {
+    getUpdateState: async () => updateState,
+    checkUpdate: async () => updateState,
+    openReleasePage: async () => {},
+    openRepository: async () => {},
+    onUpdateStateChanged: noop,
     updatePreferences,
     getPreferences: async () => preferences,
     getOverlayState: async () => overlayState,

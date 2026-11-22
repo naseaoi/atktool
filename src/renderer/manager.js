@@ -3,7 +3,10 @@ import * as stateModule from './manager/state.js';
 import * as dialog from './manager/hid-dialog.js';
 import * as actions from './manager/actions.js';
 
+import { initUpdate } from './manager/update.js';
+
 async function boot() {
+  initUpdate();
   const [initialPreferences, initialOverlayState] = await Promise.all([
     window.atkManager.getPreferences(),
     window.atkManager.getOverlayState(),

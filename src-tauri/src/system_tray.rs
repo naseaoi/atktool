@@ -98,6 +98,7 @@ struct TrayMenuState {
     pin: CheckMenuItem<Wry>,
     compact: CheckMenuItem<Wry>,
     autostart: CheckMenuItem<Wry>,
+    update_separator: PredefinedMenuItem<Wry>,
     snapshot: Mutex<TrayMenuSnapshot>,
 }
 
@@ -250,6 +251,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<TrayMenuState> {
         pin,
         compact,
         autostart,
+        update_separator: PredefinedMenuItem::separator(app)?,
         snapshot: Mutex::new(snapshot),
     })
 }
@@ -347,6 +349,11 @@ fn handle_menu(app: &AppHandle, id: &str) {
                 let _ = update(app);
             }
         }
+        "open-release" => {
+            if let Err(error) = crate::update_check::open_release_page(app.clone()) {
+                eprintln!("打开发布页失败：{error}");
+            }
+        }
         "quit" => app.exit(0),
         _ => {}
     }
@@ -379,6 +386,20 @@ pub fn create(app: &AppHandle) -> Result<(), String> {
         })
         .build(app)
         .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn set_update_version(app: &AppHandle, version: Option<&str>) -> tauri::Result<()> {
+    let state = app.state::<TrayMenuState>();
+    if let Some(item) = state.menu.get("open-release") {
+        state.menu.remove(&item)?;
+        state.menu.remove(&state.update_separator)?;
+    }
+    if let Some(version) = version {
+        let item = MenuItemBuilder::with_id("open-release", format!("发现新版本 v{version}"))
+            .build(app)?;
+        state.menu.insert_items(&[&item, &state.update_separator], 0)?;
+    }
     Ok(())
 }
 

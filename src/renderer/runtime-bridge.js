@@ -31,6 +31,11 @@
   };
 
   window.atkManager = {
+    getUpdateState: () => invoke('get_update_state'),
+    checkUpdate: () => invoke('check_update'),
+    openReleasePage: () => invoke('open_release_page'),
+    openRepository: () => invoke('open_repository'),
+    onUpdateStateChanged: (callback) => subscribe('manager:update-state', callback),
     getPreferences: () => invoke('get_preferences'),
     getOverlayState: () => invoke('get_overlay_state'),
     setOpenAtLogin: (enabled) => invoke('set_open_at_login', { enabled }),

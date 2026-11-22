@@ -72,4 +72,19 @@ test('runtime bridge maps Tauri commands to existing renderer APIs', async () =>
   assert.equal(calls[1].command, 'toggle_pin');
   assert.equal(calls[1].args, undefined);
   assert.equal(listeners.has('overlay:state-changed'), false);
+
+  const manager = context.window.atkManager;
+  await manager.getUpdateState();
+  await manager.checkUpdate();
+  await manager.openReleasePage();
+  await manager.openRepository();
+  assert.deepEqual(calls.slice(2), ['get_update_state', 'check_update', 'open_release_page', 'open_repository']
+    .map((command) => ({ command, args: undefined })));
+  let received;
+  const unsubscribe = manager.onUpdateStateChanged((state) => { received = state; });
+  listeners.get('manager:update-state')({ payload: { checking: true } });
+  assert.deepEqual(received, { checking: true });
+  await Promise.resolve();
+  unsubscribe();
+  assert.equal(listeners.has('manager:update-state'), false);
 });
