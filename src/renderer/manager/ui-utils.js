@@ -16,22 +16,20 @@ export function formatTime(isoTime) {
   }).format(date);
 }
 
-// waiting 态需要区分"待绑定/待连接",所以把是否已绑定作为参数显式传入。
-export function getStatusLabel(status, bound) {
-  switch (status) {
-    case 'connected':
-      return '直连成功';
-    case 'waiting':
-      return bound ? '待连接' : '待绑定';
-    case 'unsupported':
-      return '待适配';
-    case 'error':
-      return '异常';
-    case 'authorizing':
-      return '授权中';
-    default:
-      return '加载中';
+const STATUS_CHIPS = {
+  connected: { text: '已连接', icon: 'dot', kind: 'tone' },
+  unsupported: { text: '待适配', icon: 'alert', kind: 'warn' },
+  error: { text: '读取异常', icon: 'alert', kind: 'error' },
+  authorizing: { text: '授权中', icon: 'dot', kind: 'neutral' },
+  loading: { text: '连接中', icon: 'dot', kind: 'neutral' },
+};
+
+// waiting 态需要区分"待绑定/待连接"，所以把是否已绑定作为参数显式传入。
+export function getStatusChip(status, bound) {
+  if (status === 'waiting') {
+    return { text: bound ? '待连接' : '待绑定', icon: 'dot', kind: 'neutral' };
   }
+  return STATUS_CHIPS[status] || STATUS_CHIPS.loading;
 }
 
 export function normalizeOverlayVariant(value) {

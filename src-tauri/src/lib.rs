@@ -1,9 +1,12 @@
 mod battery_service;
+mod battery_trend;
 mod commands;
 mod device;
 mod hub;
 mod hub_permissions;
 mod models;
+mod overlay_behavior;
+mod overlay_edge;
 mod protocol;
 mod state;
 mod system_tray;
@@ -22,6 +25,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let _ = window_manager::show_overlay(app);
         }))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
@@ -46,6 +50,7 @@ pub fn run() {
             let visible = preferences.overlay_visible;
             app.manage(AppState::new(preferences.clone()));
             let _ = state::save_preferences(app.handle(), &preferences);
+            overlay_behavior::install(app.handle());
             app.manage(BatteryService::start(
                 app.handle().clone(),
                 binding,
@@ -71,7 +76,10 @@ pub fn run() {
             commands::toggle_variant,
             commands::request_refresh,
             commands::fit_manager_height,
-            commands::fit_overlay_height,
+            commands::fit_overlay_size,
+            commands::update_preferences,
+            commands::show_overlay_menu,
+            commands::open_manager,
             commands::hide_overlay,
             commands::activate_stable_source,
             commands::begin_hid_selection,

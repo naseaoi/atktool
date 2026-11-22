@@ -14,18 +14,6 @@ fn configure_overlay_events(app: &tauri::AppHandle, window: &WebviewWindow) {
     let app_handle = app.clone();
     let tracked_window = window.clone();
     window.on_window_event(move |event| match event {
-        WindowEvent::Moved(position) => {
-            let scale = tracked_window.scale_factor().unwrap_or(1.0);
-            let logical = position.to_logical::<f64>(scale);
-            let preferences = app_handle
-                .state::<AppState>()
-                .set_overlay_position(WindowPosition {
-                    x: logical.x.round() as i32,
-                    y: logical.y.round() as i32,
-                    scale_factor: Some(scale),
-                });
-            let _ = save_preferences(&app_handle, &preferences);
-        }
         WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             let preferences = app_handle.state::<AppState>().set_overlay_visible(false);
@@ -39,10 +27,19 @@ fn configure_overlay_events(app: &tauri::AppHandle, window: &WebviewWindow) {
 }
 
 pub fn overlay_geometry(preferences: &Preferences) -> (f64, f64, Option<WindowPosition>) {
+    let scale = match preferences.overlay_size.as_str() {
+        "small" => 0.9,
+        "large" => 1.2,
+        _ => 1.0,
+    };
     if preferences.overlay_variant == "compact" {
-        (80.0, 80.0, preferences.compact_overlay_bounds)
+        (
+            112.0 * scale,
+            52.0 * scale,
+            preferences.compact_overlay_bounds,
+        )
     } else {
-        (360.0, 262.0, preferences.overlay_bounds)
+        (296.0 * scale, 154.0 * scale, preferences.overlay_bounds)
     }
 }
 
@@ -62,22 +59,24 @@ fn create_overlay(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
         .skip_taskbar(true)
         .visible(false);
     let window = builder.build().map_err(|error| error.to_string())?;
+    if let Err(error) = crate::overlay_edge::install(&window) {
+        window
+            .destroy()
+            .map_err(|e| format!("{error}；窗口清理失败：{e}"))?;
+        return Err(error);
+    }
     configure_overlay_events(app, &window);
     restore_created_window(app, &window, position)?;
     Ok(window)
 }
 
 pub fn show_overlay(app: &tauri::AppHandle) -> Result<(), String> {
-    let window = if let Some(window) = app.get_webview_window("overlay") {
-        window
-    } else {
-        create_overlay(app)?
-    };
-    window.show().map_err(|error| error.to_string())?;
+    if app.get_webview_window("overlay").is_none() {
+        create_overlay(app)?;
+    }
     let preferences = app.state::<AppState>().set_overlay_visible(true);
     save_preferences(app, &preferences)?;
-    app.state::<BatteryService>().set_visible(true)?;
-    system_tray::update(app)
+    crate::overlay_behavior::apply(app, true)
 }
 
 pub fn hide_overlay(app: &tauri::AppHandle) -> Result<(), String> {
@@ -91,11 +90,13 @@ pub fn hide_overlay(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 pub fn toggle_overlay(app: &tauri::AppHandle) -> Result<(), String> {
-    if app.get_webview_window("overlay").is_some() {
-        hide_overlay(app)
-    } else {
-        show_overlay(app)
+    if let Some(window) = app.get_webview_window("overlay") {
+        if window.is_visible().map_err(|e| e.to_string())? {
+            return hide_overlay(app);
+        }
     }
+    crate::overlay_behavior::manual_show(app);
+    show_overlay(app)
 }
 
 fn remember_manager_bounds(app: &tauri::AppHandle, window: &WebviewWindow) {
@@ -121,6 +122,10 @@ fn remember_manager_bounds(app: &tauri::AppHandle, window: &WebviewWindow) {
     let _ = save_preferences(app, &preferences);
 }
 
+/// 管理页高度随内容回传，此值只防止窗口被压到放不下设备卡。
+pub const MANAGER_MIN_HEIGHT: f64 = 420.0;
+const MANAGER_MIN_WIDTH: f64 = 640.0;
+
 pub fn show_manager(app: &tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("manager") {
         window.show().map_err(|error| error.to_string())?;
@@ -128,11 +133,11 @@ pub fn show_manager(app: &tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
     let bounds = app.state::<AppState>().preferences().manager_bounds;
-    let width = bounds.map_or(880.0, |bounds| bounds.width.max(820.0));
+    let width = bounds.map_or(780.0, |bounds| bounds.width.max(MANAGER_MIN_WIDTH));
     let builder = WebviewWindowBuilder::new(app, "manager", WebviewUrl::App("manager.html".into()))
         .title("ATK 设备管理")
-        .inner_size(width, 720.0)
-        .min_inner_size(820.0, 560.0)
+        .inner_size(width, 560.0)
+        .min_inner_size(MANAGER_MIN_WIDTH, MANAGER_MIN_HEIGHT)
         .resizable(true)
         .visible(false);
     let window = builder.build().map_err(|error| error.to_string())?;
@@ -150,6 +155,22 @@ pub fn show_manager(app: &tauri::AppHandle) -> Result<(), String> {
         _ => {}
     });
     restore_created_window(app, &window, bounds.map(|bounds| bounds.position))?;
+    // 首帧高度由前端测量后经 fit_manager_height 设定并显示，避免先以默认高度出现再跳动。
+    // 前端异常时仍要能看到窗口，超时后兜底显示。
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        if let Err(error) = reveal_manager(&window) {
+            eprintln!("设备管理页兜底显示失败：{error}");
+        }
+    });
+    Ok(())
+}
+
+/// 首次显示管理页；已可见时不重复抢占焦点。
+pub fn reveal_manager(window: &WebviewWindow) -> Result<(), String> {
+    if window.is_visible().map_err(|error| error.to_string())? {
+        return Ok(());
+    }
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
 }

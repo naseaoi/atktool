@@ -35,6 +35,7 @@
     getOverlayState: () => invoke('get_overlay_state'),
     setOpenAtLogin: (enabled) => invoke('set_open_at_login', { enabled }),
     setOverlayVariant: (overlayVariant) => invoke('set_overlay_variant', { overlayVariant }),
+    updatePreferences: (patch) => invoke('update_preferences', { patch }),
     requestRefresh: () => invoke('request_refresh'),
     fitHeight: (contentHeight) => send('fit_manager_height', { contentHeight }),
     activateStableSource: () => invoke('activate_stable_source'),
@@ -54,18 +55,10 @@
     requestRefresh: () => invoke('request_refresh'),
     togglePin: () => invoke('toggle_pin'),
     toggleVariant: () => invoke('toggle_variant'),
-    fitHeight: (contentHeight) => send('fit_overlay_height', { contentHeight }),
+    fitSize: (width, height) => send('fit_overlay_size', { width, height }),
     hideOverlay: () => send('hide_overlay'),
+    showMenu: () => send('show_overlay_menu'),
+    openManager: () => send('open_manager'),
+    startDragging: () => tauri.window.getCurrentWindow().startDragging(),
   };
-
-  document.addEventListener('mousedown', (event) => {
-    if (
-      event.button !== 0
-      || !document.body.dataset.variant
-      || event.target.closest('.no-drag, button, a, input, select, textarea')
-    ) {
-      return;
-    }
-    void tauri.window.getCurrentWindow().startDragging();
-  });
 })();

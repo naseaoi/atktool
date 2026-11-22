@@ -1,7 +1,8 @@
 import * as dom from './dom-refs.js';
-import { formatTime, getStatusLabel, normalizeOverlayVariant } from './ui-utils.js';
+import { formatTime, getStatusChip, normalizeOverlayVariant } from './ui-utils.js';
 
 const shared = window.AtkHidShared;
+const batteryView = window.AtkBatteryView;
 
 let state = {
   status: 'loading',
@@ -27,6 +28,7 @@ let preferences = {
 };
 let pendingAction = '';
 let fitHeightTimer = null;
+let lastFitHeight = 0;
 
 export function getState() {
   return state;
@@ -54,11 +56,10 @@ export function updateActionButtons() {
   const busy = Boolean(pendingAction);
   const hubSync = Boolean(preferences.hubSync);
 
-  dom.authorizeButton.textContent = bound ? '更换绑定设备' : '选择并绑定设备';
-  dom.refreshButton.textContent = '刷新当前设备';
-  dom.unbindButton.textContent = '解绑当前设备';
-  dom.fallbackButton.textContent = hubSync ? '停止同步官网电量' : '同步官网电量';
-  dom.fallbackButton.dataset.active = hubSync ? 'true' : 'false';
+  dom.authorizeButton.textContent = bound ? '更换设备' : '选择并绑定设备';
+  dom.fallbackLabelEl.textContent = hubSync ? '正在同步官网电量' : '同步官网电量';
+  dom.fallbackButton.setAttribute('aria-pressed', String(hubSync));
+  dom.fallbackButton.title = hubSync ? '点击停止同步官网电量' : '直连不可用时，从官网驱动页同步电量';
 
   dom.authorizeButton.disabled = busy;
   dom.refreshButton.disabled = busy || (!bound && !hubSync);
@@ -66,22 +67,27 @@ export function updateActionButtons() {
   dom.fallbackButton.disabled = busy;
 }
 
-export function scheduleFitHeight() {
-  if (fitHeightTimer) {
-    window.clearTimeout(fitHeightTimer);
+function measureContentHeight() {
+  const bodyStyle = window.getComputedStyle(document.body);
+  const padding = (Number.parseFloat(bodyStyle.paddingTop) || 0) + (Number.parseFloat(bodyStyle.paddingBottom) || 0);
+  return Math.ceil(dom.appShellEl.scrollHeight + padding);
+}
+
+// 设备卡各状态高度一致，正常情况下只在首次显示和窗口宽度变化导致换行时才会上报新高度。
+export function fitHeight() {
+  window.clearTimeout(fitHeightTimer);
+  fitHeightTimer = null;
+  const height = measureContentHeight();
+  if (height === lastFitHeight) {
+    return;
   }
+  lastFitHeight = height;
+  window.atkManager.fitHeight(height);
+}
 
-  fitHeightTimer = window.setTimeout(() => {
-    fitHeightTimer = null;
-    const bodyStyle = window.getComputedStyle(document.body);
-    const paddingTop = Number.parseFloat(bodyStyle.paddingTop) || 0;
-    const paddingBottom = Number.parseFloat(bodyStyle.paddingBottom) || 0;
-    const shellHeight = dom.appShellEl ? Math.ceil(dom.appShellEl.scrollHeight) : 0;
-    const contentHeight = Math.ceil(shellHeight + paddingTop + paddingBottom);
-
-    // 设备管理页改成按需窗口后，仍然按真实内容高度回传，避免重开时尺寸抖动。
-    window.atkManager.fitHeight(contentHeight);
-  }, 16);
+export function scheduleFitHeight() {
+  window.clearTimeout(fitHeightTimer);
+  fitHeightTimer = window.setTimeout(fitHeight, 16);
 }
 
 function resolveDisplayDeviceName(name) {
@@ -104,30 +110,60 @@ function resolveDisplayDeviceName(name) {
   return normalized || boundName || savedName;
 }
 
-function getChargeStatus(nextState) {
-  if (nextState.chargeStatus === 'full') {
-    return 'full';
+function setPressed(buttons, isPressed) {
+  for (const button of buttons) {
+    button.setAttribute('aria-pressed', String(isPressed(button)));
   }
-
-  if (nextState.charging || nextState.chargeStatus === 'charging') {
-    return 'charging';
-  }
-
-  return 'idle';
 }
 
-function getChargeText(nextState) {
-  const chargeStatus = getChargeStatus(nextState);
+export function renderOpacity(value) {
+  dom.opacityInput.value = value;
+  dom.opacityValue.textContent = `${value}%`;
+  const min = Number(dom.opacityInput.min);
+  const max = Number(dom.opacityInput.max);
+  dom.opacityInput.style.setProperty('--fill', `${((value - min) / (max - min)) * 100}%`);
+}
 
-  if (chargeStatus === 'full') {
-    return '充电完成';
+function resolveChip(view) {
+  if (view.chargeStatus === 'charging') {
+    return { text: '充电中', icon: 'bolt', kind: 'tone' };
   }
-
-  if (chargeStatus === 'charging') {
-    return '充电中';
+  if (view.chargeStatus === 'full') {
+    return { text: '已充满', icon: 'plug', kind: 'tone' };
   }
+  if (view.online && view.tone === 'critical') {
+    return { text: '电量极低', icon: 'alert', kind: 'error' };
+  }
+  if (view.online && view.tone === 'low') {
+    return { text: '电量低', icon: 'alert', kind: 'warn' };
+  }
+  return getStatusChip(view.status, hasBoundDevice());
+}
 
-  return nextState.batteryPercent === null ? '--' : '未充电';
+function renderChip(chip) {
+  dom.statusChipEl.dataset.icon = chip.icon;
+  dom.statusChipEl.dataset.kind = chip.kind;
+  dom.statusChipTextEl.textContent = chip.text;
+}
+
+function describeDetail(view) {
+  if (view.online) {
+    if (view.estimateText) {
+      return view.estimateText;
+    }
+    if (view.chargeStatus === 'charging') {
+      return '正在估算充满时间';
+    }
+    return view.chargeStatus === 'full' ? '' : '正在估算剩余时间';
+  }
+  const parts = [];
+  if (view.percent !== null && state.lastSampledAt) {
+    parts.push(`${batteryView.formatAgo(state.lastSampledAt)}的读数`);
+  }
+  if (state.message) {
+    parts.push(state.message);
+  }
+  return parts.join(' · ');
 }
 
 export function applyPreferences(patch) {
@@ -146,20 +182,11 @@ export function applyPreferences(patch) {
     preferredDevice = patch.preferredHidDevice || null;
   }
 
-  dom.startupToggle.dataset.enabled = preferences.openAtLogin ? 'true' : 'false';
+  setPressed(dom.variantButtons, (button) => button.dataset.variant === preferences.overlayVariant);
+  setPressed(dom.sizeButtons, (button) => button.dataset.size === preferences.overlaySize);
+  setPressed(dom.preferenceToggles, (button) => Boolean(preferences[button.dataset.pref]));
   dom.startupToggle.setAttribute('aria-pressed', String(preferences.openAtLogin));
-  dom.startupValueEl.textContent = preferences.openAtLogin ? '已开启' : '已关闭';
-  dom.startupHintEl.textContent = preferences.openAtLogin
-    ? '登录 Windows 后自动启动悬浮窗。'
-    : '需要手动双击或从脚本启动。';
-
-  const isCompact = preferences.overlayVariant === 'compact';
-  dom.overlayModeToggle.dataset.enabled = isCompact ? 'true' : 'false';
-  dom.overlayModeToggle.setAttribute('aria-pressed', String(isCompact));
-  dom.overlayModeValueEl.textContent = isCompact ? '简略版' : '完整版';
-  dom.overlayModeHintEl.textContent = isCompact
-    ? '当前为圆形简略版，仅显示电量数字。'
-    : '当前为完整版，显示状态、时间与操作按钮。';
+  renderOpacity(preferences.overlayOpacity);
 
   updateActionButtons();
   scheduleFitHeight();
@@ -172,17 +199,35 @@ export function applyState(patch) {
   };
 
   const displayDeviceName = resolveDisplayDeviceName(state.deviceName);
+  const view = batteryView.describeBattery(state);
+  const body = document.body;
 
-  document.body.dataset.status = state.status || 'loading';
-  dom.heroMessageEl.textContent = state.message || '等待采集器完成初始化...';
-  dom.heroBatteryEl.textContent = state.batteryText || '--';
-  dom.statusChipEl.textContent = getStatusLabel(state.status, hasBoundDevice());
-  dom.deviceNameEl.textContent = displayDeviceName || '等待连接';
-  dom.modeTextEl.textContent = state.mode === 'fallback' ? '同步官网电量' : '本地 HID 直连';
+  body.dataset.status = view.status;
+  body.dataset.tone = view.tone;
+  body.dataset.offline = String(!view.online);
+  body.dataset.empty = String(view.percent === null);
+  body.dataset.charging = String(view.chargeStatus === 'charging');
+
+  dom.deviceNameEl.textContent = displayDeviceName || (hasBoundDevice() ? '等待连接' : '未绑定设备');
+  dom.deviceNameEl.title = displayDeviceName;
+  renderChip(resolveChip(view));
+  dom.batteryValueEl.textContent = view.percent === null ? '--' : String(view.percent);
+  dom.batteryMeterEl.style.setProperty('--level', `${view.percent ?? 0}%`);
+  if (view.percent === null) {
+    dom.batteryMeterEl.removeAttribute('aria-valuenow');
+    dom.batteryMeterEl.setAttribute('aria-valuetext', '电量未知');
+  } else {
+    dom.batteryMeterEl.setAttribute('aria-valuenow', String(view.percent));
+    dom.batteryMeterEl.setAttribute('aria-valuetext', `${view.percent}%`);
+  }
+  const detail = describeDetail(view);
+  dom.detailTextEl.textContent = detail;
+  dom.detailTextEl.title = detail;
+
+  dom.modeTextEl.textContent = state.mode === 'fallback' ? '官网同步' : '本地 HID 直连';
   dom.protocolTextEl.textContent = state.protocolName || '--';
   dom.updatedAtEl.textContent = formatTime(state.sampledAt);
   dom.grantedCountEl.textContent = String(state.grantedDevicesCount ?? 0);
-  dom.chargingTextEl.textContent = getChargeText(state);
 
   scheduleFitHeight();
 }

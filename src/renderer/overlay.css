@@ -1,14 +1,37 @@
 :root {
-  --line: rgba(120, 212, 193, 0.18);
-  --text-main: #eef8f6;
-  --text-soft: #b8d2cc;
-  --ok: #74e2b0;
-  --warn: #ffd57a;
-  --idle: #8fb9c2;
-  --accent: #78d4c1;
-  --danger: #ff8a6b;
-  --charge-live: #7ee6a8;
-  --shadow: 0 6px 14px rgba(0, 0, 0, 0.16);
+  color-scheme: dark;
+  --surface: #1e2126;
+  --surface-hi: rgba(255, 255, 255, 0.045);
+  --border: rgba(255, 255, 255, 0.09);
+  --text: #f2f4f6;
+  --text-soft: rgba(232, 237, 242, 0.6);
+  --track: rgba(255, 255, 255, 0.09);
+  --hover: rgba(255, 255, 255, 0.08);
+  --tone-normal: #5ee0b8;
+  --tone-low: #f5b83d;
+  --tone-critical: #ff5d61;
+  --tone-idle: rgba(232, 237, 242, 0.38);
+  --shadow: 0 2px 6px rgba(0, 0, 0, 0.32);
+  --tone: var(--tone-normal);
+  --opacity: 1;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --surface: #f9fafb;
+    --surface-hi: rgba(255, 255, 255, 0.6);
+    --border: rgba(0, 0, 0, 0.08);
+    --text: #16191d;
+    --text-soft: rgba(22, 25, 29, 0.58);
+    --track: rgba(0, 0, 0, 0.08);
+    --hover: rgba(0, 0, 0, 0.06);
+    --tone-normal: #0e9f7a;
+    --tone-low: #c27a0a;
+    --tone-critical: #d9383d;
+    --tone-idle: rgba(22, 25, 29, 0.32);
+    --shadow: 0 2px 6px rgba(0, 0, 0, 0.14);
+  }
 }
 
 * {
@@ -21,390 +44,40 @@ body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  font-family: "Trebuchet MS", "Segoe UI Variable Text", sans-serif;
-  color: var(--text-main);
   background: transparent;
 }
 
 body {
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  color: var(--text);
   user-select: none;
+  cursor: default;
 }
 
 button {
+  margin: 0;
+  padding: 0;
   border: 0;
   font: inherit;
   color: inherit;
+  background: none;
   cursor: pointer;
 }
 
-.panel {
-  position: relative;
-  width: 100%;
-  padding: 12px;
-  -webkit-app-region: drag;
+[hidden] {
+  display: none !important;
 }
 
-.panel__glow {
-  position: absolute;
-  inset: 14px 12px 12px;
-  border-radius: 12px;
-  background:
-    radial-gradient(circle at top right, rgba(104, 221, 198, 0.08), transparent 46%),
-    radial-gradient(circle at bottom left, rgba(255, 182, 84, 0.05), transparent 44%);
-  filter: blur(2px);
+body[data-tone='low'] {
+  --tone: var(--tone-low);
 }
 
-.panel__shell {
-  position: relative;
-  height: auto;
-  overflow: hidden;
-  --battery-level: 0;
-  padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(10, 27, 34, 0.97);
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(18px);
+body[data-tone='critical'] {
+  --tone: var(--tone-critical);
 }
 
-.panel__header,
-.hero,
-.telemetry,
-.battery-bar,
-.message {
-  position: relative;
-  z-index: 1;
-}
-
-.panel__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 46px;
-}
-
-.panel__header > :first-child {
-  flex: 1;
-  min-width: 0;
-}
-
-.eyebrow {
-  margin: 0 0 3px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0;
-  color: var(--text-soft);
-  opacity: 0.72;
-}
-
-h1 {
-  margin: 0;
-  max-width: 100%;
-  font-size: 18px;
-  line-height: 1.2;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.panel__actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.icon-button {
-  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
-}
-
-.icon-button {
-  width: 32px;
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.icon-button svg {
-  width: 16px;
-  height: 16px;
-}
-
-.icon-button svg[data-mode='fill'] {
-  fill: currentColor;
-  stroke: none;
-}
-
-.icon-button svg[data-mode='stroke'] {
-  fill: none;
-  stroke: currentColor;
-}
-
-.icon-button[data-active='true'] {
-  border-color: rgba(120, 212, 193, 0.42);
-  background: rgba(120, 212, 193, 0.14);
-  color: #a6efe1;
-}
-
-.icon-button:hover {
-  transform: translateY(-1px);
-}
-
-.icon-button:disabled {
-  cursor: default;
-  opacity: 0.5;
-  transform: none;
-}
-
-.hero {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  min-height: 60px;
-  margin-top: 12px;
-}
-
-.hero__copy {
-  flex: 1;
-  min-width: 0;
-}
-
-.hero__label {
-  margin: 0 0 4px;
-  font-size: 12px;
-  color: var(--text-soft);
-}
-
-.hero__value {
-  margin: 0;
-  font-size: 56px;
-  font-weight: 700;
-  line-height: 0.9;
-  letter-spacing: 0;
-}
-
-.hero__status {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  margin-bottom: 6px;
-  font-size: 13px;
-  color: var(--text-soft);
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
-  border-radius: 50%;
-  background: var(--idle);
-  box-shadow: 0 0 0 3px rgba(143, 185, 194, 0.1);
-}
-
-.battery-bar {
-  height: 8px;
-  margin-top: 12px;
-  overflow: hidden;
-  border-radius: 4px;
-  background: rgba(184, 210, 204, 0.13);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
-}
-
-.battery-bar__fill {
-  position: relative;
-  width: var(--battery-level, 0%);
-  height: 100%;
-  overflow: hidden;
-  border-radius: inherit;
-  background: var(--accent);
-  box-shadow: 0 0 10px rgba(120, 212, 193, 0.32);
-  transition: width 0.24s ease, background 0.24s ease, opacity 0.24s ease;
-}
-
-.battery-bar__fill::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.25), transparent 45%);
-}
-
-body[data-battery-tone='medium'] .battery-bar__fill {
-  background: var(--warn);
-}
-
-body[data-battery-tone='low'] .battery-bar__fill {
-  background: var(--danger);
-}
-
-body[data-battery-tone='charging'] .battery-bar__fill {
-  background: var(--charge-live);
-}
-
-body[data-battery-tone='idle'] .battery-bar__fill {
-  opacity: 0;
-}
-
-.telemetry {
-  display: flex;
-  align-items: center;
-  min-height: 31px;
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
-}
-
-.telemetry__copy {
-  display: flex;
-  align-items: baseline;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--text-soft);
-  white-space: nowrap;
-}
-
-.telemetry__copy strong {
-  color: var(--text-main);
-}
-
-.telemetry__separator {
-  margin: 0 7px;
-  opacity: 0.45;
-}
-
-.telemetry__updated {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.telemetry__updated time {
-  font-variant-numeric: tabular-nums;
-  color: var(--text-main);
-}
-
-.refresh-button {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
-  padding: 0;
-  border: 0;
-  color: var(--text-soft);
-  background: transparent;
-  cursor: pointer;
-}
-
-.refresh-button svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.refresh-button:hover {
-  color: var(--accent);
-}
-
-.refresh-button:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.refresh-button:disabled {
-  color: var(--idle);
-  cursor: default;
-  opacity: 0.45;
-}
-
-.message {
-  display: none;
-  margin: 9px 0 0;
-  padding-left: 8px;
-  border-left: 2px solid rgba(143, 185, 194, 0.55);
-  font-size: 12px;
-  line-height: 1.35;
-  color: var(--text-soft);
-}
-
-body[data-status='loading'] .message,
-body[data-status='waiting'] .message,
-body[data-status='unsupported'] .message,
-body[data-status='error'] .message {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-body[data-status='connected'] #statusText {
-  color: var(--ok);
-}
-
-body[data-status='connected'] .status-dot {
-  background: var(--ok);
-  box-shadow: 0 0 0 3px rgba(116, 226, 176, 0.12);
-}
-
-body[data-status='waiting'] #statusText {
-  color: var(--warn);
-}
-
-body[data-status='waiting'] .status-dot {
-  background: var(--warn);
-  box-shadow: 0 0 0 3px rgba(255, 213, 122, 0.12);
-}
-
-body[data-status='error'] #statusText {
-  color: var(--danger);
-}
-
-body[data-status='error'] .status-dot {
-  background: var(--danger);
-  box-shadow: 0 0 0 3px rgba(255, 138, 107, 0.12);
-}
-
-body[data-status='loading'] #statusText,
-body[data-status='unsupported'] #statusText {
-  color: var(--idle);
-}
-
-body[data-battery-tone='medium'] #batteryStateText {
-  color: var(--warn);
-}
-
-body[data-battery-tone='low'] #batteryStateText {
-  color: var(--danger);
-}
-
-body[data-battery-tone='charging'] #batteryStateText {
-  color: var(--charge-live);
-}
-
-.no-drag {
-  -webkit-app-region: no-drag;
-}
-
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
+body[data-tone='idle'] {
+  --tone: var(--tone-idle);
 }
 
 /* 原生窗口可能先于首次状态回包显示，此时保持透明。 */
@@ -412,137 +85,392 @@ body:not([data-variant]) .panel {
   display: none;
 }
 
-body[data-variant='compact'] .panel {
+/* 外圈 8px 留给阴影，窗口尺寸按 .panel 实际大小回传。 */
+.panel {
+  display: inline-block;
   padding: 8px;
-  width: 80px;
-  height: 80px;
+}
+
+.card {
+  position: relative;
   overflow: hidden;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--surface-hi), transparent 60%), var(--surface);
+  box-shadow: var(--shadow);
+  opacity: var(--opacity);
+  transition: opacity 0.2s ease;
 }
 
-body[data-variant='compact'] .panel__glow {
-  inset: 9px;
-  border-radius: 25%;
-  background:
-    radial-gradient(circle at 30% 25%, rgba(104, 221, 198, 0.1), transparent 52%),
-    radial-gradient(circle at 70% 78%, rgba(255, 182, 84, 0.07), transparent 44%);
-  filter: blur(2px);
+.card:hover {
+  opacity: 1;
 }
 
-body[data-variant='compact'] .panel__shell {
-  height: 100%;
-  padding: 0;
-  border-radius: 25%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  isolation: isolate;
-  overflow: hidden;
-  -webkit-app-region: no-drag;
-  cursor: pointer;
-  background:
-    linear-gradient(135deg, rgba(18, 44, 51, 0.96), rgba(10, 22, 29, 0.98)),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.05), transparent);
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.14);
-}
-
-body[data-variant='compact'] .panel__shell::before {
+/* 新采样到达时扫过一道浅光，提示数据已刷新。 */
+.card::after {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: 25%;
-  padding: 2px;
-  background: linear-gradient(135deg, rgba(168, 239, 225, 0.16), rgba(255, 210, 122, 0.12));
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  opacity: 0.7;
-}
-
-.compact-orbit {
-  display: none;
-}
-
-body[data-variant='compact'] .compact-orbit {
-  display: block;
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
+  background: linear-gradient(105deg, transparent 35%, rgba(255, 255, 255, 0.07) 50%, transparent 65%);
+  transform: translateX(-100%);
   pointer-events: none;
 }
 
-.compact-orbit__beam {
-  fill: none;
-  stroke-linecap: round;
-  stroke-dashoffset: 0;
-  opacity: 0;
+.card.is-pulsing::after {
+  animation: sweep 0.9s ease-out 1;
 }
 
-.compact-orbit__beam--tail {
-  stroke: rgba(120, 212, 193, 0.78);
-  stroke-width: 3;
-  stroke-dasharray: 14 86;
-  filter: drop-shadow(0 0 3px rgba(168, 239, 225, 0.72));
-}
+/* ---------- 完整版 ---------- */
 
-.compact-orbit__beam--core {
-  stroke: rgba(255, 210, 122, 0.98);
-  stroke-width: 2.4;
-  stroke-dasharray: 5 95;
-}
-
-body[data-variant='compact'].refresh-pulse .compact-orbit__beam {
-  animation: compact-orbit-spin 1.16s linear 1;
-}
-
-body[data-variant='compact'] .panel__header,
-body[data-variant='compact'] .battery-bar,
-body[data-variant='compact'] .telemetry,
-body[data-variant='compact'] .message,
-body[data-variant='compact'] .hero__label,
-body[data-variant='compact'] .hero__status {
+.full,
+.capsule {
   display: none;
 }
 
-body[data-variant='compact'] .hero {
-  min-height: 0;
-  margin: 0;
-  padding: 0;
-  gap: 0;
-  align-items: center;
-  justify-content: center;
+body[data-variant='full'] .card {
+  width: 280px;
+  border-radius: 10px;
 }
 
-body[data-variant='compact'] .hero__copy {
+body[data-variant='full'] .full {
+  display: block;
+  padding: 12px 14px 13px 16px;
+}
+
+.full__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+}
+
+.full__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--text-soft);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.menu-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  flex: 0 0 24px;
+  border-radius: 6px;
+  color: var(--text-soft);
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.menu-button svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.card:hover .menu-button,
+.menu-button:focus-visible {
+  opacity: 1;
+}
+
+.menu-button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.full__main {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.reading {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  font-family: "Bahnschrift", "Segoe UI Variable Display", sans-serif;
+  font-variant-numeric: tabular-nums;
+  transition: opacity 0.2s ease;
+}
+
+.reading__value {
+  font-size: 42px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.reading__unit {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--text-soft);
+}
+
+body[data-empty='true'] .reading__unit {
+  display: none;
+}
+
+body[data-offline='true'] .reading {
+  opacity: 0.45;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  margin-bottom: 5px;
+  padding: 0 9px 0 7px;
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--chip-color, var(--tone));
+  background: color-mix(in srgb, var(--chip-color, var(--tone)) 15%, transparent);
+}
+
+.chip__icon {
+  display: none;
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chip__icon--bolt {
+  fill: currentColor;
+  stroke: none;
+}
+
+.chip__dot {
+  display: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.chip[data-icon='bolt'] .chip__icon--bolt,
+.chip[data-icon='plug'] .chip__icon--plug,
+.chip[data-icon='alert'] .chip__icon--alert,
+.chip[data-icon='dot'] .chip__dot {
+  display: block;
+}
+
+.chip[data-kind='neutral'] {
+  --chip-color: var(--text-soft);
+}
+
+.chip[data-kind='warn'] {
+  --chip-color: var(--tone-low);
+}
+
+.chip[data-kind='error'] {
+  --chip-color: var(--tone-critical);
+}
+
+body[data-status='loading'] .chip__dot {
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+.meter {
+  position: relative;
+  height: 6px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--track);
+}
+
+.meter__fill {
+  position: relative;
+  width: var(--level, 0%);
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+  background: var(--tone);
+  transition: width 0.4s ease, background 0.3s ease;
+}
+
+body[data-offline='true'] .meter__fill {
+  opacity: 0.45;
+}
+
+/* 充电时填充条上有持续流动的高光。 */
+body[data-charging='true'] .meter__fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  background-size: 50% 100%;
+  background-repeat: no-repeat;
+  animation: flow 1.8s linear infinite;
+}
+
+.full__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 18px;
+  margin-top: 9px;
+}
+
+.full__detail {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-soft);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.link-button {
+  flex-shrink: 0;
+  padding: 0 6px;
+  margin-right: -4px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--tone-normal);
+}
+
+.link-button:hover {
+  background: var(--hover);
+}
+
+.menu-button:focus-visible,
+.link-button:focus-visible {
+  outline: 1.5px solid var(--tone-normal);
+  outline-offset: 1px;
+}
+
+/* ---------- 简略版胶囊 ---------- */
+
+body[data-variant='compact'] .card {
+  width: 96px;
+  height: 36px;
+  border-radius: 18px;
+}
+
+body[data-variant='compact'] .capsule {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 7px;
+  height: 100%;
+  transition: opacity 0.2s ease;
 }
 
-body[data-variant='compact'] .hero__value {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 700;
+body[data-variant='compact'][data-offline='true'] .capsule {
+  opacity: 0.5;
+}
+
+.capsule__glyph {
+  width: 22px;
+  height: 11px;
+  flex: 0 0 22px;
+  overflow: visible;
+}
+
+.capsule__shell {
+  fill: none;
+  stroke: var(--text-soft);
+  stroke-width: 1.3;
+}
+
+.capsule__nub {
+  fill: var(--text-soft);
+}
+
+.capsule__fill {
+  fill: var(--tone);
+  transition: width 0.4s ease, fill 0.3s ease;
+}
+
+.capsule__bolt {
+  display: none;
+  fill: var(--text);
+  stroke: var(--surface);
+  stroke-width: 0.8;
+  paint-order: stroke;
+}
+
+body[data-charging='true'] .capsule__bolt {
+  display: block;
+}
+
+.capsule__value {
+  min-width: 34px;
+  font-family: "Bahnschrift", "Segoe UI Variable Display", sans-serif;
+  font-size: 15px;
+  font-weight: 600;
   line-height: 1;
-  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
 }
 
-@keyframes compact-orbit-spin {
-  0% {
-    stroke-dashoffset: 0;
-    opacity: 0;
+body[data-tone='low'] .capsule__value,
+body[data-tone='critical'] .capsule__value {
+  color: var(--tone);
+}
+
+body[data-status='error'] .capsule__shell,
+body[data-status='unsupported'] .capsule__shell {
+  stroke: var(--tone-low);
+}
+
+body[data-variant='compact'][data-tone='critical']:not([data-offline='true']) .card {
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+/* ---------- 动画 ---------- */
+
+@keyframes sweep {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes flow {
+  from {
+    background-position: -100% 0;
   }
 
-  10% {
-    opacity: 1;
+  to {
+    background-position: 200% 0;
   }
+}
 
-  90% {
-    opacity: 1;
+@keyframes blink {
+  50% {
+    opacity: 0.3;
   }
+}
 
-  100% {
-    stroke-dashoffset: -100;
-    opacity: 0;
+@keyframes breathe {
+  50% {
+    border-color: color-mix(in srgb, var(--tone-critical) 70%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card.is-pulsing::after,
+  body[data-charging='true'] .meter__fill::after,
+  body[data-status='loading'] .chip__dot,
+  body[data-variant='compact'][data-tone='critical'] .card {
+    animation: none;
   }
 }

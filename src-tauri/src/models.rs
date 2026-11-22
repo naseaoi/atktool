@@ -38,6 +38,24 @@ pub struct Preferences {
     pub overlay_variant: String,
     pub overlay_visible: bool,
     pub hub_sync: bool,
+    pub overlay_size: String,
+    pub overlay_opacity: u8,
+    pub position_locked: bool,
+    pub smart_display: bool,
+    pub edge_auto_hide: bool,
+    pub hide_in_fullscreen: bool,
+    pub low_battery_notify: bool,
+    pub last_battery: Option<BatterySnapshot>,
+    pub discharge_anchor: Option<BatterySnapshot>,
+    pub low_battery_alerted: [bool; 2],
+}
+
+/// 最近一次成功读到的电量，断连后悬浮窗仍以离线态显示它。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatterySnapshot {
+    pub percent: u8,
+    pub sampled_at: String,
 }
 
 impl Default for Preferences {
@@ -53,6 +71,16 @@ impl Default for Preferences {
             overlay_variant: "full".to_owned(),
             overlay_visible: true,
             hub_sync: false,
+            overlay_size: "medium".to_owned(),
+            overlay_opacity: 100,
+            position_locked: false,
+            smart_display: false,
+            edge_auto_hide: false,
+            hide_in_fullscreen: true,
+            low_battery_notify: true,
+            last_battery: None,
+            discharge_anchor: None,
+            low_battery_alerted: [false; 2],
         }
     }
 }
@@ -74,6 +102,20 @@ pub struct OverlayState {
     pub always_on_top: bool,
     pub overlay_variant: String,
     pub granted_devices_count: usize,
+    #[serde(flatten)]
+    pub view: OverlayView,
+}
+
+/// 由 `AppState::replace_overlay` 统一填充的派生字段，构造采样结果时保持默认值即可。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverlayView {
+    pub overlay_size: String,
+    pub overlay_opacity: u8,
+    pub position_locked: bool,
+    pub last_battery_percent: Option<u8>,
+    pub last_sampled_at: Option<String>,
+    pub estimate_minutes: Option<u32>,
 }
 
 impl OverlayState {
@@ -93,6 +135,7 @@ impl OverlayState {
             always_on_top: preferences.always_on_top,
             overlay_variant: preferences.overlay_variant.clone(),
             granted_devices_count: 0,
+            view: OverlayView::default(),
         }
     }
 }

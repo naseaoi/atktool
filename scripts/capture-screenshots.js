@@ -2,7 +2,7 @@ const fs = require('node:fs/promises');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn, spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const OUTPUT_DIR = path.join(ROOT_DIR, 'assets', 'screenshots');
@@ -11,6 +11,8 @@ const EDGE_PATHS = [
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
 ];
 const SAMPLE_TIME = new Date().toISOString();
+// 与管理页实际内容高度一致，内容变化时同步调整。
+const MANAGER_HEIGHT = 502;
 
 const preferredDevice = {
   vendorId: 0x373b,
@@ -21,6 +23,8 @@ const preferredDevice = {
 
 const preferences = {
   openAtLogin: true,
+  overlaySize: 'medium', overlayOpacity: 100, positionLocked: false,
+  smartDisplay: false, edgeAutoHide: false, hideInFullscreen: true, lowBatteryNotify: true,
   displayDeviceName: 'ATK A9 Ultra Max',
   overlayVariant: 'full',
   preferredHidDevice: preferredDevice,
@@ -42,18 +46,72 @@ const overlayState = {
   grantedDevicesCount: 1,
   overlayVariant: 'full',
   alwaysOnTop: true,
+  overlaySize: 'medium',
+  overlayOpacity: 100,
+  positionLocked: false,
+  lastBatteryPercent: 90,
+  lastSampledAt: SAMPLE_TIME,
+  estimateMinutes: 2280,
 };
+
+function galleryPage(scheme) {
+  const now = Date.now();
+  const ago = (minutes) => new Date(now - minutes * 60000).toISOString();
+  const states = [
+    ['正常', { batteryPercent: 90, estimateMinutes: 2280 }],
+    ['充电', { batteryPercent: 64, charging: true, chargeStatus: 'charging', estimateMinutes: 42, sampledAt: ago(2) }],
+    ['已充满', { batteryPercent: 100, chargeStatus: 'full' }],
+    ['低电量', { batteryPercent: 18, estimateMinutes: 200, sampledAt: ago(3) }],
+    ['极低', { batteryPercent: 7, estimateMinutes: 50 }],
+    ['离线', { status: 'waiting', lastBatteryPercent: 72, lastSampledAt: ago(12), message: '未找到已绑定设备，插入接收器后会自动重连。' }],
+    ['异常', { status: 'error', message: '原生 HID 读取异常：设备拒绝访问。正在自动重试...' }],
+    ['连接中', { status: 'loading', deviceName: '', message: '正在准备原生 HID 直连器...' }],
+  ];
+  const renderGroup = (variant) => states.map(([label, patch]) => {
+    const state = {
+      status: 'connected', deviceName: overlayState.deviceName, overlayVariant: variant,
+      overlaySize: 'medium', overlayOpacity: 100, charging: false, chargeStatus: 'idle',
+      batteryPercent: null, sampledAt: patch.status ? null : ago(0), ...patch,
+    };
+    const query = new URLSearchParams({ scheme, state: JSON.stringify(state) });
+    return `<figure><iframe title="${label}" src="overlay.html?${query}"></iframe><figcaption>${label}</figcaption></figure>`;
+  }).join('');
+  const dark = scheme === 'dark';
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>悬浮窗全状态总览</title>
+    <style>
+      :root { color-scheme: ${scheme}; }
+      body { margin: 0; padding: 16px; min-height: 100vh; box-sizing: border-box;
+        background: linear-gradient(135deg,${dark ? '#1d3557,#2a2f45 50%,#3d2c4a' : '#cfe3f5,#e9e4f2 50%,#f5e6dc'});
+        color: ${dark ? '#edf1f7' : '#303946'}; font: 12px/18px 'Segoe UI', 'Microsoft YaHei UI', sans-serif; }
+      h2 { margin: 0 8px 4px; font-size: 14px; }
+      section { display: grid; grid-template-columns: repeat(4, 1fr); row-gap: 12px; }
+      section + h2 { margin-top: 20px; }
+      figure { display: grid; justify-items: center; margin: 0; }
+      iframe { border: 0; width: 300px; height: 160px; }
+      .compact { grid-template-columns: repeat(8, 1fr); }
+      .compact iframe { width: 116px; height: 56px; }
+    </style><h2>完整版</h2><section>${renderGroup('full')}</section>
+    <h2>简略版</h2><section class="compact">${renderGroup('compact')}</section></html>`;
+}
 
 const bridgeSource = `
 (() => {
   const preferences = ${JSON.stringify(preferences)};
-  const overlayState = ${JSON.stringify(overlayState)};
+  const stateQuery = location.pathname === '/src/renderer/overlay.html' && new URLSearchParams(location.search).get('state');
+  const overlayState = stateQuery ? JSON.parse(stateQuery) : ${JSON.stringify(overlayState)};
   const noop = () => () => {};
+  let notifyPreferences = () => {};
+  const updatePreferences = async (patch) => {
+    Object.assign(preferences, patch);
+    notifyPreferences(preferences);
+    return preferences;
+  };
   window.atkManager = {
+    updatePreferences,
     getPreferences: async () => preferences,
     getOverlayState: async () => overlayState,
-    setOpenAtLogin: async (enabled) => ({ ...preferences, openAtLogin: Boolean(enabled) }),
-    setOverlayVariant: async (overlayVariant) => ({ ...preferences, overlayVariant }),
+    setOpenAtLogin: (enabled) => updatePreferences({ openAtLogin: Boolean(enabled) }),
+    setOverlayVariant: (overlayVariant) => updatePreferences({ overlayVariant }),
     requestRefresh: async () => true,
     fitHeight: () => {},
     activateStableSource: async () => true,
@@ -62,7 +120,7 @@ const bridgeSource = `
     cancelHidSelection: async () => true,
     clearDeviceBinding: async () => ({ ...preferences, preferredHidDevice: null }),
     openFallback: async () => true,
-    onPreferencesChanged: noop,
+    onPreferencesChanged: (callback) => { notifyPreferences = callback; },
     onOverlayStateChanged: noop,
     onHidSelectionChanged: noop,
   };
@@ -72,8 +130,11 @@ const bridgeSource = `
     requestRefresh: async () => true,
     togglePin: async () => ({ ...overlayState, alwaysOnTop: !overlayState.alwaysOnTop }),
     toggleVariant: async () => ({ ...overlayState, overlayVariant: 'compact' }),
-    fitHeight: () => {},
+    fitSize: () => {},
     hideOverlay: () => {},
+    showMenu: () => {},
+    openManager: () => {},
+    startDragging: async () => {},
   };
 })();
 `;
@@ -97,7 +158,7 @@ async function findEdge() {
   throw new Error('Microsoft Edge not found');
 }
 
-function injectBridge(html, pathname) {
+function injectBridge(html, scheme) {
   const marker = '    <script src="./runtime-bridge.js"></script>';
   if (!html.includes(marker)) {
     throw new Error('Screenshot bridge marker not found');
@@ -106,13 +167,13 @@ function injectBridge(html, pathname) {
     marker,
     `    <script src="/__screenshot-bridge.js"></script>\n${marker}`,
   );
-  if (pathname !== '/src/renderer/overlay.html') {
-    return withBridge;
+  if (scheme) {
+    return withBridge.replace(/\.\/(\w+)\.css/, `./$1.css?scheme=${scheme}`);
   }
-  return withBridge.replace('</head>', '    <style>html, body { width: 360px; }</style>\n  </head>');
+  return withBridge;
 }
 
-async function readAsset(pathname) {
+async function readAsset(pathname, scheme) {
   const relativePath = decodeURIComponent(pathname).replace(/^\/+/, '');
   const absolutePath = path.resolve(ROOT_DIR, relativePath);
   const rootPrefix = `${ROOT_DIR}${path.sep}`;
@@ -121,7 +182,9 @@ async function readAsset(pathname) {
   }
   let content = await fs.readFile(absolutePath);
   if (pathname === '/src/renderer/manager.html' || pathname === '/src/renderer/overlay.html') {
-    content = Buffer.from(injectBridge(content.toString('utf8'), pathname));
+    content = Buffer.from(injectBridge(content.toString('utf8'), scheme));
+  } else if (pathname.endsWith('.css') && scheme) {
+    content = content.toString('utf8').replaceAll('(prefers-color-scheme: light)', scheme === 'light' ? 'all' : 'not all');
   }
   return {
     content,
@@ -132,13 +195,20 @@ async function readAsset(pathname) {
 async function startServer() {
   const server = http.createServer(async (request, response) => {
     try {
-      const { pathname } = new URL(request.url, 'http://127.0.0.1');
+      const { pathname, searchParams } = new URL(request.url, 'http://127.0.0.1');
+      const requestedScheme = searchParams.get('scheme');
+      const scheme = ['light', 'dark'].includes(requestedScheme) ? requestedScheme : null;
+      if (pathname === '/src/renderer/gallery.html' && scheme) {
+        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        response.end(galleryPage(scheme));
+        return;
+      }
       if (pathname === '/__screenshot-bridge.js') {
         response.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
         response.end(bridgeSource);
         return;
       }
-      const asset = await readAsset(pathname);
+      const asset = await readAsset(pathname, scheme);
       response.writeHead(200, { 'Content-Type': asset.contentType });
       response.end(asset.content);
     } catch (_error) {
@@ -153,30 +223,6 @@ async function startServer() {
   return server;
 }
 
-function cropPng(source, destination, width, height) {
-  const script = path.join(ROOT_DIR, 'scripts', 'crop-png.ps1');
-  const result = spawnSync('powershell.exe', [
-    '-NoProfile',
-    '-NonInteractive',
-    '-File',
-    script,
-    '-Source',
-    source,
-    '-Destination',
-    destination,
-    '-Width',
-    String(width),
-    '-Height',
-    String(height),
-  ], { windowsHide: true, stdio: 'inherit' });
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    throw new Error(`PNG crop failed: ${result.status}`);
-  }
-}
-
 async function capture(
   edgePath,
   baseUrl,
@@ -184,12 +230,9 @@ async function capture(
   outputName,
   width,
   height,
-  transparent = false,
-  cropWidth = null,
 ) {
   const profileDir = await fs.mkdtemp(path.join(os.tmpdir(), 'atktool-screenshots-'));
   const outputPath = path.join(OUTPUT_DIR, outputName);
-  const screenshotPath = cropWidth ? `${outputPath}.uncropped.png` : outputPath;
   const arguments = [
     '--headless=new',
     '--no-sandbox',
@@ -204,11 +247,8 @@ async function capture(
     `--window-size=${width},${height}`,
     '--virtual-time-budget=2000',
     `--user-data-dir=${profileDir}`,
-    `--screenshot=${screenshotPath}`,
+    `--screenshot=${outputPath}`,
   ];
-  if (transparent) {
-    arguments.push('--default-background-color=00000000');
-  }
   arguments.push(`${baseUrl}/src/renderer/${page}`);
   try {
     await new Promise((resolve, reject) => {
@@ -226,10 +266,6 @@ async function capture(
         }
       });
     });
-    if (cropWidth) {
-      cropPng(screenshotPath, outputPath, cropWidth, Math.round(height * 1.25));
-      await fs.rm(screenshotPath, { force: true });
-    }
   } finally {
     await fs.rm(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
@@ -248,8 +284,10 @@ async function main() {
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}`;
   try {
-    await capture(edgePath, baseUrl, 'manager.html', 'manager.png', 880, 759);
-    await capture(edgePath, baseUrl, 'overlay.html', 'overlay-full.png', 500, 262, true, 450);
+    for (const scheme of ['dark', 'light']) {
+      await capture(edgePath, baseUrl, `manager.html?scheme=${scheme}`, `manager-${scheme}.png`, 780, MANAGER_HEIGHT);
+      await capture(edgePath, baseUrl, `gallery.html?scheme=${scheme}`, `overlay-states-${scheme}.png`, 1280, 540);
+    }
   } finally {
     await closeServer(server);
   }

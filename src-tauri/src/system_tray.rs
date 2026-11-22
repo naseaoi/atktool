@@ -265,6 +265,30 @@ fn status_label(status: &str) -> &'static str {
 }
 
 fn handle_menu(app: &AppHandle, id: &str) {
+    // Tauri 的托盘监听器接收全局菜单事件，包括窗口弹出菜单。
+    if id.starts_with("overlay.") {
+        use crate::commands::{toggle_pin, toggle_variant, update_preferences, PreferencesPatch};
+        let result = match id {
+            "overlay.pin" => toggle_pin(app.clone(), app.state()).map(|_| ()),
+            "overlay.variant" => toggle_variant(app.clone(), app.state()).map(|_| ()),
+            "overlay.lock" => update_preferences(
+                app.clone(),
+                PreferencesPatch {
+                    position_locked: Some(!app.state::<AppState>().preferences().position_locked),
+                    ..Default::default()
+                },
+            )
+            .map(|_| ()),
+            "overlay.refresh" => refresh_active_source(app),
+            "overlay.manager" => window_manager::show_manager(app),
+            "overlay.hide" => window_manager::hide_overlay(app),
+            _ => return,
+        };
+        if let Err(e) = result.and_then(|_| update(app)) {
+            eprintln!("悬浮窗菜单操作失败：{e}");
+        }
+        return;
+    }
     match id {
         "toggle-overlay" => {
             let _ = window_manager::toggle_overlay(app);

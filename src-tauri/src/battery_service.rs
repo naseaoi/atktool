@@ -11,7 +11,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
     device::{candidates, list_devices, open_path, NativeDevice},
-    models::{DeviceBinding, OverlayState},
+    models::{DeviceBinding, OverlayState, OverlayView},
     protocol::{is_protocol_failure, read_battery, BatteryReading, ProtocolKind, Transport},
     state::{save_preferences, AppState},
     system_tray,
@@ -195,9 +195,10 @@ struct Runtime {
 
 impl Runtime {
     fn emit(&self, overlay: OverlayState) {
-        self.app
+        let overlay = self
+            .app
             .state::<AppState>()
-            .replace_overlay(overlay.clone());
+            .replace_overlay(&self.app, overlay);
         let _ = self.app.emit("overlay:state-changed", &overlay);
         let _ = self.app.emit("manager:overlay-state", &overlay);
         let _ = system_tray::update(&self.app);
@@ -224,6 +225,7 @@ impl Runtime {
             always_on_top: preferences.always_on_top,
             overlay_variant: preferences.overlay_variant,
             granted_devices_count: device_count,
+            view: OverlayView::default(),
         }
     }
 
@@ -279,6 +281,7 @@ impl Runtime {
             always_on_top: preferences.always_on_top,
             overlay_variant: preferences.overlay_variant,
             granted_devices_count: count,
+            view: OverlayView::default(),
         };
         self.last_stable = Some(overlay.clone());
         overlay
@@ -413,6 +416,7 @@ impl Runtime {
             always_on_top: preferences.always_on_top,
             overlay_variant: preferences.overlay_variant,
             granted_devices_count: count,
+            view: OverlayView::default(),
         };
         self.emit(overlay);
         if protocol_failure {
@@ -447,7 +451,7 @@ fn worker_loop(
             let mut overlay = app.state::<AppState>().overlay();
             overlay.status = "error".to_owned();
             overlay.message = format!("HID 初始化失败：{error}");
-            app.state::<AppState>().replace_overlay(overlay.clone());
+            let overlay = app.state::<AppState>().replace_overlay(&app, overlay);
             let _ = app.emit("overlay:state-changed", &overlay);
             let _ = app.emit("manager:overlay-state", &overlay);
             return;

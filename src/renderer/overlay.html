@@ -8,91 +8,64 @@
     <link rel="stylesheet" href="./overlay.css" />
   </head>
   <body>
-    <main class="panel">
-      <div class="panel__glow"></div>
-      <section id="panelShell" class="panel__shell">
-        <svg class="compact-orbit" viewBox="0 0 64 64" aria-hidden="true">
-          <rect class="compact-orbit__beam compact-orbit__beam--tail" x="1.5" y="1.5" width="61" height="61" rx="14.5" pathLength="100" />
-          <rect class="compact-orbit__beam compact-orbit__beam--core" x="1.5" y="1.5" width="61" height="61" rx="14.5" pathLength="100" />
-        </svg>
-        <header class="panel__header">
-          <div>
-            <p class="eyebrow">ATK BATTERY</p>
-            <h1 id="deviceName">等待连接</h1>
-          </div>
-          <div class="panel__actions no-drag">
-            <button id="pinButton" class="icon-button" type="button" aria-label="切换置顶" title="切换置顶">
-              <svg data-mode="fill" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M8 10V8a4 4 0 1 1 8 0v2h1a2 2 0 0 1 2 2v6.5a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V12a2 2 0 0 1 2-2h1zm2 0h4V8a2 2 0 1 0-4 0v2zm2 3a1.75 1.75 0 0 1 1 3.186V18h-2v-1.814A1.75 1.75 0 0 1 12 13z" />
+    <main id="panel" class="panel">
+      <section id="card" class="card">
+        <div class="full">
+          <header class="full__head">
+            <span id="deviceName" class="full__name">等待连接</span>
+            <button id="menuButton" class="menu-button" type="button" aria-label="更多操作" title="更多操作">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="5" cy="12" r="1.6" />
+                <circle cx="12" cy="12" r="1.6" />
+                <circle cx="19" cy="12" r="1.6" />
               </svg>
-              <span class="sr-only">切换置顶</span>
             </button>
-            <button id="switchButton" class="icon-button" type="button" aria-label="切换为简略版" title="切换为简略版">
-              <svg
-                data-mode="stroke"
-                xmlns="http://www.w3.org/2000/svg"
-                width="24"
-                height="24"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path stroke="none" d="M0 0h24v24H0z" fill="none" />
-                <path d="M5 9l4 0l0 -4" />
-                <path d="M3 3l6 6" />
-                <path d="M5 15l4 0l0 4" />
-                <path d="M3 21l6 -6" />
-                <path d="M19 9l-4 0l0 -4" />
-                <path d="M15 9l6 -6" />
-                <path d="M19 15l-4 0l0 4" />
-                <path d="M15 15l6 6" />
+          </header>
+
+          <div class="full__main">
+            <div class="reading">
+              <span id="batteryValue" class="reading__value">--</span>
+              <span class="reading__unit">%</span>
+            </div>
+            <span id="statusChip" class="chip" hidden>
+              <svg class="chip__icon chip__icon--bolt" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2z" />
               </svg>
-              <span class="sr-only">切换悬浮窗形态</span>
-            </button>
-          </div>
-        </header>
-
-        <section class="hero">
-          <div class="hero__copy">
-            <p class="hero__label">当前电量</p>
-            <div id="batteryText" class="hero__value">--</div>
-          </div>
-          <div class="hero__status">
-            <span class="status-dot" aria-hidden="true"></span>
-            <strong id="statusText">加载中</strong>
-          </div>
-        </section>
-
-        <div id="batteryBar" class="battery-bar" role="progressbar" aria-label="当前电量" aria-valuemin="0" aria-valuemax="100">
-          <div class="battery-bar__fill"></div>
-        </div>
-
-        <section class="telemetry">
-          <div class="telemetry__copy">
-            <strong id="batteryStateText">等待电量</strong>
-            <span class="telemetry__separator" aria-hidden="true">·</span>
-            <span class="telemetry__updated">
-              最近更新 <time id="updatedAt">--</time>
-              <button id="refreshButton" class="refresh-button no-drag" type="button" aria-label="刷新电量" title="刷新电量">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5" />
-                  <path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5" />
-                </svg>
-                <span class="sr-only">刷新电量</span>
-              </button>
+              <svg class="chip__icon chip__icon--plug" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M9 2v5M15 2v5M6 7h12v4a6 6 0 0 1-12 0V7zM12 17v5" />
+              </svg>
+              <svg class="chip__icon chip__icon--alert" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 8v5M12 16.5v.01M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20h15.4a2 2 0 0 0 1.7-2.8L13.7 3.9a2 2 0 0 0-3.4 0z" />
+              </svg>
+              <span class="chip__dot" aria-hidden="true"></span>
+              <span id="statusChipText"></span>
             </span>
           </div>
-        </section>
 
-        <p id="messageText" class="message">正在准备页面...</p>
+          <div id="batteryMeter" class="meter" role="progressbar" aria-label="电量" aria-valuemin="0" aria-valuemax="100">
+            <div class="meter__fill"></div>
+          </div>
+
+          <footer class="full__foot">
+            <span id="detailText" class="full__detail"></span>
+            <button id="managerButton" class="link-button" type="button" hidden>设备管理</button>
+          </footer>
+        </div>
+
+        <div class="capsule" aria-hidden="true">
+          <svg class="capsule__glyph" viewBox="0 0 24 12">
+            <rect class="capsule__shell" x="0.75" y="0.75" width="20" height="10.5" rx="3" />
+            <rect class="capsule__nub" x="21.6" y="4" width="1.8" height="4" rx="0.9" />
+            <rect id="capsuleFill" class="capsule__fill" x="2.5" y="2.5" width="0" height="7" rx="1.5" />
+            <path class="capsule__bolt" d="M11.6 1.6 7.6 6.6h2.9l-.9 3.8 4-5H10.7l.9-3.8z" />
+          </svg>
+          <span id="capsuleValue" class="capsule__value">--</span>
+        </div>
       </section>
     </main>
 
     <script src="./runtime-bridge.js"></script>
+    <script src="./battery-view.js"></script>
     <script src="./overlay.js"></script>
   </body>
 </html>

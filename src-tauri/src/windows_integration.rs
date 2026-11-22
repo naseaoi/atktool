@@ -69,6 +69,9 @@ mod platform {
                         let _ = service.refresh(true);
                     }
                 }
+                windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == 1 => {
+                    crate::overlay_behavior::poll(app)
+                }
                 WM_CLOSE => {
                     let _ = unsafe { DestroyWindow(hwnd) };
                     return LRESULT(0);
@@ -192,6 +195,13 @@ mod platform {
         };
         let power_notify =
             unsafe { RegisterSuspendResumeNotification(recipient, DEVICE_NOTIFY_WINDOW_HANDLE) };
+        if unsafe { windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(window), 1, 2000, None) }
+            == 0
+        {
+            let _ = ready.send(Err("全屏状态定时器创建失败".into()));
+            let _ = unsafe { DestroyWindow(window) };
+            return;
+        }
         hwnd_slot.store(window.0 as isize, Ordering::Release);
         let _ = ready.send(Ok(()));
         let mut message = MSG::default();

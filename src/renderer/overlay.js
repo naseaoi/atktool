@@ -1,249 +1,225 @@
+const panelEl = document.getElementById('panel');
+const cardEl = document.getElementById('card');
 const deviceNameEl = document.getElementById('deviceName');
-const batteryTextEl = document.getElementById('batteryText');
-const statusTextEl = document.getElementById('statusText');
-const batteryStateTextEl = document.getElementById('batteryStateText');
-const updatedAtEl = document.getElementById('updatedAt');
-const batteryBarEl = document.getElementById('batteryBar');
-const messageTextEl = document.getElementById('messageText');
-const refreshButton = document.getElementById('refreshButton');
-const pinButton = document.getElementById('pinButton');
-const switchButton = document.getElementById('switchButton');
-const panelEl = document.querySelector('.panel');
-const panelShellEl = document.getElementById('panelShell');
+const batteryValueEl = document.getElementById('batteryValue');
+const statusChipEl = document.getElementById('statusChip');
+const statusChipTextEl = document.getElementById('statusChipText');
+const batteryMeterEl = document.getElementById('batteryMeter');
+const detailTextEl = document.getElementById('detailText');
+const managerButton = document.getElementById('managerButton');
+const menuButton = document.getElementById('menuButton');
+const capsuleFillEl = document.getElementById('capsuleFill');
+const capsuleValueEl = document.getElementById('capsuleValue');
 
+const CAPSULE_FILL_WIDTH = 16.5;
+const SIZE_ZOOM = { small: 0.9, medium: 1, large: 1.2 };
+
+const STATUS_CHIPS = {
+  loading: { text: '连接中', icon: 'dot', kind: 'neutral' },
+  waiting: { text: '未连接', icon: 'dot', kind: 'neutral' },
+  unsupported: { text: '待适配', icon: 'alert', kind: 'warn' },
+  error: { text: '读取异常', icon: 'alert', kind: 'error' },
+};
+
+let currentState = null;
 let lastSampledAt = '';
-let refreshPulseTimer = null;
-let fitHeightTimer = null;
+let pulseTimer = null;
+let lastFitSize = '';
 
-function formatTime(isoTime) {
-  if (!isoTime) {
-    return '--';
-  }
+const { describeBattery, formatAgo } = window.AtkBatteryView;
 
-  const date = new Date(isoTime);
-  if (Number.isNaN(date.getTime())) {
-    return '--';
-  }
+// 把后端状态归纳成界面需要的一份视图，完整版与胶囊共用。
+function describe(state) {
+  const { status, online, percent, chargeStatus, estimateText, tone } = describeBattery(state);
 
-  return new Intl.DateTimeFormat('zh-CN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(date);
-}
-
-function getChargeStatus(state) {
-  if (state?.chargeStatus === 'full') {
-    return 'full';
-  }
-
-  if (state?.charging || state?.chargeStatus === 'charging') {
-    return 'charging';
-  }
-
-  return 'idle';
-}
-
-function getStatusLabel(status, chargeStatus) {
-  if (status === 'connected' && chargeStatus === 'full') {
-    return '充电完成';
-  }
-
-  if (status === 'connected' && chargeStatus === 'charging') {
-    return '充电中';
-  }
-
-  switch (status) {
-    case 'connected':
-      return '已连接';
-    case 'unsupported':
-      return '待适配';
-    case 'waiting':
-      return '待授权';
-    case 'error':
-      return '异常';
-    default:
-      return '加载中';
-  }
-}
-
-function normalizeBatteryPercent(value) {
-  if (!Number.isFinite(value)) {
-    return null;
-  }
-
-  return Math.max(0, Math.min(100, Math.round(value)));
-}
-
-function getBatteryTone(percent, chargeStatus) {
+  let chip = online ? null : STATUS_CHIPS[status] || STATUS_CHIPS.waiting;
   if (chargeStatus === 'charging') {
-    return 'charging';
+    chip = { text: '充电中', icon: 'bolt', kind: 'tone' };
+  } else if (chargeStatus === 'full') {
+    chip = { text: '已充满', icon: 'plug', kind: 'tone' };
+  } else if (online && tone === 'critical') {
+    chip = { text: '电量极低', icon: 'alert', kind: 'error' };
+  } else if (online && tone === 'low') {
+    chip = { text: '电量低', icon: 'alert', kind: 'warn' };
   }
 
-  if (percent === null) {
-    return 'idle';
-  }
-
-  if (percent <= 20) {
-    return 'low';
-  }
-
-  if (percent <= 55) {
-    return 'medium';
-  }
-
-  return 'high';
-}
-
-function getBatteryStateLabel(percent, chargeStatus) {
-  if (chargeStatus === 'full' || percent === 100) {
-    return '电量已满';
-  }
-
-  if (chargeStatus === 'charging') {
-    return '正在充电';
-  }
-
-  if (percent === null) {
-    return '等待电量';
-  }
-
-  if (percent <= 20) {
-    return '电量偏低';
-  }
-
-  if (percent <= 55) {
-    return '电量适中';
-  }
-
-  return '电量充足';
-}
-
-function triggerRefreshPulse() {
-  if (refreshPulseTimer) {
-    window.clearTimeout(refreshPulseTimer);
-  }
-
-  // 先移除再强制回流，确保每次拿到新采样时间都能重新触发一圈流光动画。
-  document.body.classList.remove('refresh-pulse');
-  void document.body.offsetWidth;
-  document.body.classList.add('refresh-pulse');
-
-  refreshPulseTimer = window.setTimeout(() => {
-    document.body.classList.remove('refresh-pulse');
-  }, 1220);
-}
-
-function scheduleFitHeight() {
-  if (fitHeightTimer) {
-    window.clearTimeout(fitHeightTimer);
-  }
-
-  fitHeightTimer = window.setTimeout(() => {
-    fitHeightTimer = null;
-
-    if (document.body.dataset.variant !== 'full' || !panelEl || !panelShellEl) {
-      return;
-    }
-
-    const panelStyle = window.getComputedStyle(panelEl);
-    const paddingTop = Number.parseFloat(panelStyle.paddingTop) || 0;
-    const paddingBottom = Number.parseFloat(panelStyle.paddingBottom) || 0;
-    const shellHeight = panelShellEl.getBoundingClientRect().height;
-    const contentHeight = Math.ceil(shellHeight + paddingTop + paddingBottom);
-
-    // 悬浮窗改成按需创建后，继续按内容高度回传，避免每次重开出现底部裁切。
-    window.atkOverlay.fitHeight(contentHeight);
-  }, 16);
-}
-
-function renderState(state) {
-  const nextSampledAt = state.sampledAt || '';
-  const batteryPercent = normalizeBatteryPercent(state.batteryPercent);
-  const chargeStatus = getChargeStatus(state);
-
-  document.body.dataset.status = state.status || 'loading';
-  document.body.dataset.variant = state.overlayVariant || 'full';
-  document.body.dataset.batteryTone = getBatteryTone(batteryPercent, chargeStatus);
-  deviceNameEl.textContent = state.deviceName || '等待连接';
-  deviceNameEl.title = state.deviceName || '';
-  batteryTextEl.textContent = state.batteryText || '--';
-  statusTextEl.textContent = getStatusLabel(state.status, chargeStatus);
-  batteryStateTextEl.textContent = getBatteryStateLabel(batteryPercent, chargeStatus);
-  updatedAtEl.textContent = formatTime(state.sampledAt);
-  updatedAtEl.dateTime = state.sampledAt || '';
-  messageTextEl.textContent = state.message || '正在准备页面...';
-  panelShellEl.style.setProperty('--battery-level', `${batteryPercent ?? 0}%`);
-  if (batteryPercent === null) {
-    batteryBarEl.removeAttribute('aria-valuenow');
-    batteryBarEl.setAttribute('aria-valuetext', '电量未知');
+  let detail;
+  if (online) {
+    const updated = `${formatAgo(state.sampledAt)}更新`;
+    detail = estimateText ? `${estimateText} · ${updated}` : updated;
+  } else if (percent !== null && state.lastSampledAt) {
+    detail = `${formatAgo(state.lastSampledAt)}的读数`;
   } else {
-    batteryBarEl.setAttribute('aria-valuenow', String(batteryPercent));
-    batteryBarEl.setAttribute('aria-valuetext', `${batteryPercent}%`);
-  }
-  pinButton.dataset.active = state.alwaysOnTop ? 'true' : 'false';
-  pinButton.title = state.alwaysOnTop ? '取消置顶' : '切换置顶';
-  pinButton.setAttribute('aria-label', state.alwaysOnTop ? '取消置顶' : '切换置顶');
-  switchButton.title = state.overlayVariant === 'compact' ? '切换为完整版' : '切换为简略版';
-  switchButton.setAttribute('aria-label', state.overlayVariant === 'compact' ? '切换为完整版' : '切换为简略版');
-
-  if (nextSampledAt && nextSampledAt !== lastSampledAt) {
-    triggerRefreshPulse();
+    detail = state.message || '';
   }
 
-  lastSampledAt = nextSampledAt;
-  scheduleFitHeight();
+  return {
+    status,
+    online,
+    percent,
+    chargeStatus,
+    estimateText,
+    tone,
+    chip,
+    detail,
+    deviceName: state.deviceName || '未绑定设备',
+    needsManager: ['waiting', 'unsupported', 'error'].includes(status),
+  };
 }
 
-refreshButton.addEventListener('click', async () => {
-  refreshButton.disabled = true;
-  try {
-    await window.atkOverlay.requestRefresh();
-  } finally {
-    refreshButton.disabled = false;
+function capsuleTooltip(view, state) {
+  const lines = [view.deviceName];
+  if (view.online) {
+    const summary = [`${view.percent}%`];
+    if (view.chip) {
+      summary.push(view.chip.text);
+    }
+    if (view.estimateText) {
+      summary.push(view.estimateText);
+    }
+    lines.push(summary.join(' · '));
+  } else {
+    lines.push(view.chip.text);
   }
-});
+  if (view.detail && view.detail !== lines[1]) {
+    lines.push(view.detail);
+  }
+  if (!view.online && state.message) {
+    lines.push(state.message);
+  }
+  return lines.join('\n');
+}
 
-pinButton.addEventListener('click', async () => {
-  const state = await window.atkOverlay.togglePin();
-  renderState(state);
-});
-
-switchButton.addEventListener('click', async () => {
-  const state = await window.atkOverlay.toggleVariant();
-  renderState(state);
-});
-
-panelShellEl.addEventListener('click', async (event) => {
-  if (document.body.dataset.variant !== 'compact') {
+function renderChip(chip) {
+  statusChipEl.hidden = !chip;
+  if (!chip) {
     return;
   }
+  statusChipEl.dataset.icon = chip.icon;
+  statusChipEl.dataset.kind = chip.kind;
+  statusChipTextEl.textContent = chip.text;
+}
 
-  if (event.target.closest('.no-drag')) {
-    return;
+function triggerPulse() {
+  window.clearTimeout(pulseTimer);
+  // 先移除再强制回流，确保连续采样也能重新播放扫光。
+  cardEl.classList.remove('is-pulsing');
+  void cardEl.offsetWidth;
+  cardEl.classList.add('is-pulsing');
+  pulseTimer = window.setTimeout(() => cardEl.classList.remove('is-pulsing'), 950);
+}
+
+function render(state) {
+  currentState = state;
+  const view = describe(state);
+  const body = document.body;
+  const variant = state.overlayVariant === 'compact' ? 'compact' : 'full';
+  const size = SIZE_ZOOM[state.overlaySize] ? state.overlaySize : 'medium';
+  const opacity = Number.isFinite(state.overlayOpacity) ? state.overlayOpacity : 100;
+
+  body.dataset.variant = variant;
+  body.dataset.status = view.status;
+  body.dataset.tone = view.tone;
+  body.dataset.offline = String(!view.online);
+  body.dataset.empty = String(view.percent === null);
+  body.dataset.charging = String(view.chargeStatus === 'charging');
+  panelEl.style.zoom = String(SIZE_ZOOM[size]);
+  cardEl.style.setProperty('--opacity', String(Math.max(0.4, Math.min(1, opacity / 100))));
+
+  const valueText = view.percent === null ? '--' : String(view.percent);
+  deviceNameEl.textContent = view.deviceName;
+  deviceNameEl.title = view.deviceName;
+  batteryValueEl.textContent = valueText;
+  renderChip(view.chip);
+  statusChipEl.title = view.online ? '' : state.message || '';
+  detailTextEl.textContent = view.detail;
+  detailTextEl.title = view.online ? '' : state.message || '';
+  managerButton.hidden = !view.needsManager;
+
+  const level = view.percent ?? 0;
+  batteryMeterEl.style.setProperty('--level', `${level}%`);
+  if (view.percent === null) {
+    batteryMeterEl.removeAttribute('aria-valuenow');
+    batteryMeterEl.setAttribute('aria-valuetext', '电量未知');
+  } else {
+    batteryMeterEl.setAttribute('aria-valuenow', String(view.percent));
+    batteryMeterEl.setAttribute('aria-valuetext', `${view.percent}%`);
   }
 
-  const state = await window.atkOverlay.toggleVariant();
-  renderState(state);
+  capsuleFillEl.setAttribute('width', String(((CAPSULE_FILL_WIDTH * level) / 100).toFixed(2)));
+  capsuleValueEl.textContent = view.percent === null ? '--' : `${view.percent}%`;
+  cardEl.title = variant === 'compact' ? capsuleTooltip(view, state) : '';
+
+  const sampledAt = view.online ? state.sampledAt || '' : '';
+  if (sampledAt && sampledAt !== lastSampledAt) {
+    triggerPulse();
+  }
+  lastSampledAt = sampledAt;
+  fitWindow();
+}
+
+function fitWindow() {
+  if (!document.body.dataset.variant) {
+    return;
+  }
+  const rect = panelEl.getBoundingClientRect();
+  const width = Math.ceil(rect.width);
+  const height = Math.ceil(rect.height);
+  const key = `${width}x${height}`;
+  if (width === 0 || height === 0 || key === lastFitSize) {
+    return;
+  }
+  lastFitSize = key;
+  window.atkOverlay.fitSize(width, height);
+}
+
+async function applyResult(request) {
+  const state = await request;
+  if (state) {
+    render(state);
+  }
+}
+
+// 系统拖动会吞掉 mouseup，click/dblclick 不再可靠；双击改由第二次按下的 detail 识别。
+cardEl.addEventListener('mousedown', (event) => {
+  if (event.button !== 0 || event.target.closest('button')) {
+    return;
+  }
+  if (event.detail === 2) {
+    void applyResult(window.atkOverlay.toggleVariant());
+    return;
+  }
+  if (!currentState?.positionLocked) {
+    window.atkOverlay.startDragging().catch((error) => console.error(error));
+  }
 });
 
-window.addEventListener('resize', () => {
-  scheduleFitHeight();
+document.addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+  window.atkOverlay.showMenu();
 });
+
+menuButton.addEventListener('click', () => {
+  window.atkOverlay.showMenu();
+});
+
+managerButton.addEventListener('click', () => {
+  window.atkOverlay.openManager();
+});
+
+new ResizeObserver(fitWindow).observe(panelEl);
+
+// 相对时间需要随时间推移刷新。
+window.setInterval(() => {
+  if (currentState) {
+    render(currentState);
+  }
+}, 30000);
 
 async function boot() {
-  const initialState = await window.atkOverlay.getInitialState();
-  renderState(initialState);
-
-  if (document.fonts?.ready) {
-    document.fonts.ready.then(() => {
-      scheduleFitHeight();
-    });
-  }
-
-  window.atkOverlay.onStateChange((state) => {
-    renderState(state);
-  });
+  render(await window.atkOverlay.getInitialState());
+  document.fonts?.ready.then(fitWindow);
+  window.atkOverlay.onStateChange(render);
 }
 
 boot();

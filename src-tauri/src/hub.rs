@@ -5,7 +5,7 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 use crate::{
     battery_service::BatteryService,
     commands::{emit_overlay, emit_preferences},
-    models::OverlayState,
+    models::{OverlayState, OverlayView},
     state::{save_preferences, AppState},
     system_tray,
 };
@@ -62,8 +62,9 @@ fn emit_loading(app: &AppHandle) -> Result<(), String> {
         always_on_top: preferences.always_on_top,
         overlay_variant: preferences.overlay_variant,
         granted_devices_count: 0,
+        view: OverlayView::default(),
     };
-    app.state::<AppState>().replace_overlay(overlay.clone());
+    let overlay = app.state::<AppState>().replace_overlay(app, overlay);
     emit_overlay(app, &overlay)
 }
 
@@ -191,13 +192,10 @@ pub fn update_fallback_state(
     if status == "connected" && percent.is_none() {
         status = "waiting".to_owned();
     }
-    let mut charge_status = match payload.charge_status.as_str() {
+    let charge_status = match payload.charge_status.as_str() {
         "charging" | "full" => payload.charge_status,
         _ => "idle".to_owned(),
     };
-    if charge_status == "full" && percent != Some(100) {
-        charge_status = "idle".to_owned();
-    }
     let preferences = app.state::<AppState>().preferences();
     let overlay = OverlayState {
         status: status.clone(),
@@ -216,8 +214,9 @@ pub fn update_fallback_state(
         always_on_top: preferences.always_on_top,
         overlay_variant: preferences.overlay_variant,
         granted_devices_count: payload.granted_devices_count.min(32),
+        view: OverlayView::default(),
     };
-    app.state::<AppState>().replace_overlay(overlay.clone());
+    let overlay = app.state::<AppState>().replace_overlay(&app, overlay);
     emit_overlay(&app, &overlay)?;
     system_tray::update(&app)
 }
