@@ -29,16 +29,18 @@ pub fn run() {
         .setup(|app| {
             let _ = hub_permissions::import_edge_hid_grants(app.handle());
             let mut preferences = load_preferences(app.handle());
-            let autostart_result = if preferences.open_at_login {
-                app.autolaunch().enable()
-            } else {
-                app.autolaunch().disable()
-            };
-            if autostart_result.is_ok() {
-                preferences.open_at_login = app
-                    .autolaunch()
-                    .is_enabled()
-                    .unwrap_or(preferences.open_at_login);
+            if !tauri::is_dev() {
+                let autostart_result = if preferences.open_at_login {
+                    app.autolaunch().enable()
+                } else {
+                    app.autolaunch().disable()
+                };
+                if autostart_result.is_ok() {
+                    preferences.open_at_login = app
+                        .autolaunch()
+                        .is_enabled()
+                        .unwrap_or(preferences.open_at_login);
+                }
             }
             let binding = preferences.preferred_hid_device.clone();
             let visible = preferences.overlay_visible;

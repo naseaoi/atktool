@@ -407,9 +407,16 @@ body[data-battery-tone='charging'] #batteryStateText {
   border: 0;
 }
 
+/* 原生窗口可能先于首次状态回包显示，此时保持透明。 */
+body:not([data-variant]) .panel {
+  display: none;
+}
+
 body[data-variant='compact'] .panel {
   padding: 8px;
-  height: 100%;
+  width: 80px;
+  height: 80px;
+  overflow: hidden;
 }
 
 body[data-variant='compact'] .panel__glow {

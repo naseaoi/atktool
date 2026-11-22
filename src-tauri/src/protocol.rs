@@ -119,36 +119,46 @@ fn by_feature(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    Feature,
+    Output,
+}
+
+fn transport_order(preferred: Option<Transport>, fast: bool) -> [Transport; 2] {
+    match preferred.unwrap_or(if fast {
+        Transport::Feature
+    } else {
+        Transport::Output
+    }) {
+        Transport::Feature => [Transport::Feature, Transport::Output],
+        Transport::Output => [Transport::Output, Transport::Feature],
+    }
+}
+
 fn exchange(
     device: &HidDevice,
     report_id: u8,
     request: &[u8],
     feature_length: usize,
     fast: bool,
+    transport: Transport,
     matcher: fn(&[u8]) -> bool,
 ) -> Result<Vec<u8>, String> {
-    type Attempt<'a> = (&'a str, &'a dyn Fn() -> Result<Vec<u8>, String>);
-
-    let timeout = if fast {
-        HID_FAST_READ_TIMEOUT_MS
-    } else {
-        HID_READ_TIMEOUT_MS
-    };
-    let feature = || by_feature(device, report_id, request, feature_length, matcher);
-    let output = || by_output(device, report_id, request, timeout, matcher);
-    let attempts: [Attempt<'_>; 2] = if fast {
-        [("Feature Report", &feature), ("Output Report", &output)]
-    } else {
-        [("Output Report", &output), ("Feature Report", &feature)]
-    };
-    let mut errors = Vec::new();
-    for (label, read) in attempts {
-        match read() {
-            Ok(response) => return Ok(response),
-            Err(error) => errors.push(format!("{label}: {error}")),
-        }
+    match transport {
+        Transport::Feature => by_feature(device, report_id, request, feature_length, matcher),
+        Transport::Output => by_output(
+            device,
+            report_id,
+            request,
+            if fast {
+                HID_FAST_READ_TIMEOUT_MS
+            } else {
+                HID_READ_TIMEOUT_MS
+            },
+            matcher,
+        ),
     }
-    Err(errors.join(" | "))
 }
 
 fn build_compx_request() -> [u8; 16] {
@@ -179,11 +189,21 @@ fn parse_compx(response: &[u8]) -> Result<BatteryReading, String> {
     })
 }
 
-fn read_compx(device: &HidDevice, fast: bool) -> Result<BatteryReading, String> {
+fn read_compx(
+    device: &HidDevice,
+    fast: bool,
+    transport: Transport,
+) -> Result<BatteryReading, String> {
     let request = build_compx_request();
-    let response = exchange(device, COMPX_REPORT_ID, &request, 18, fast, |data| {
-        data.len() >= 7 && data[0] == 4
-    })?;
+    let response = exchange(
+        device,
+        COMPX_REPORT_ID,
+        &request,
+        18,
+        fast,
+        transport,
+        |data| data.len() >= 7 && data[0] == 4,
+    )?;
     parse_compx(&response)
 }
 
@@ -205,22 +225,32 @@ fn parse_hechi(response: &[u8]) -> Result<BatteryReading, String> {
     })
 }
 
-fn read_hechi(device: &HidDevice, fast: bool) -> Result<BatteryReading, String> {
+fn read_hechi(
+    device: &HidDevice,
+    fast: bool,
+    transport: Transport,
+) -> Result<BatteryReading, String> {
     let mut request = [0u8; 63];
     request[0] = 19;
-    let response = exchange(device, HECHI_REPORT_ID, &request, 65, fast, |data| {
-        data.len() >= 18 && data[0] == 19
-    })?;
+    let response = exchange(
+        device,
+        HECHI_REPORT_ID,
+        &request,
+        65,
+        fast,
+        transport,
+        |data| data.len() >= 18 && data[0] == 19,
+    )?;
     parse_hechi(&response)
 }
 
 pub fn read_battery(
     device: &HidDevice,
-    preferred: Option<ProtocolKind>,
+    preferred: Option<(ProtocolKind, Transport)>,
     allow_fallback: bool,
     fast: bool,
-) -> Result<BatteryReading, String> {
-    let protocols = match (preferred, allow_fallback) {
+) -> Result<(BatteryReading, Transport), String> {
+    let protocols = match (preferred.map(|p| p.0), allow_fallback) {
         (Some(ProtocolKind::Compx), false) => vec![ProtocolKind::Compx],
         (Some(ProtocolKind::Hechi), false) => vec![ProtocolKind::Hechi],
         (Some(ProtocolKind::Compx), true) => vec![ProtocolKind::Compx, ProtocolKind::Hechi],
@@ -229,13 +259,19 @@ pub fn read_battery(
     };
     let mut errors = Vec::new();
     for protocol in protocols {
-        let result = match protocol {
-            ProtocolKind::Compx => read_compx(device, fast),
-            ProtocolKind::Hechi => read_hechi(device, fast),
-        };
-        match result {
-            Ok(reading) => return Ok(reading),
-            Err(error) => errors.push(format!("{}: {error}", protocol.label())),
+        let preferred_transport = preferred.filter(|p| p.0 == protocol).map(|p| p.1);
+        for transport in transport_order(preferred_transport, fast) {
+            let result = match protocol {
+                ProtocolKind::Compx => read_compx(device, fast, transport),
+                ProtocolKind::Hechi => read_hechi(device, fast, transport),
+            };
+            match result {
+                Ok(reading) => return Ok((reading, transport)),
+                Err(error) => errors.push(format!(
+                    "{} {transport:?} Report: {error}",
+                    protocol.label()
+                )),
+            }
         }
     }
     Err(if errors.is_empty() {
@@ -264,6 +300,15 @@ pub fn is_protocol_failure(error: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_transport_precedes_the_default() {
+        use Transport::*;
+        assert_eq!(transport_order(Some(Feature), false), [Feature, Output]);
+        assert_eq!(transport_order(Some(Output), true), [Output, Feature]);
+        assert_eq!(transport_order(None, false), [Output, Feature]);
+        assert_eq!(transport_order(None, true), [Feature, Output]);
+    }
 
     #[test]
     fn normalizes_charge_flags() {

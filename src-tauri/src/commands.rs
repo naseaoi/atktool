@@ -1,5 +1,5 @@
 use hidapi::HidApi;
-use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, Size, State};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::{
@@ -27,11 +27,7 @@ pub fn apply_overlay_variant(app: &AppHandle, preferences: &Preferences) -> Resu
     let Some(window) = app.get_webview_window("overlay") else {
         return Ok(());
     };
-    let (width, height, position) = if preferences.overlay_variant == "compact" {
-        (80.0, 80.0, preferences.compact_overlay_bounds)
-    } else {
-        (360.0, 262.0, preferences.overlay_bounds)
-    };
+    let (width, height, position) = window_manager::overlay_geometry(preferences);
     window
         .set_min_size(Some(Size::Logical(LogicalSize::new(width, height))))
         .map_err(|error| error.to_string())?;
@@ -42,12 +38,7 @@ pub fn apply_overlay_variant(app: &AppHandle, preferences: &Preferences) -> Resu
         .set_size(Size::Logical(LogicalSize::new(width, height)))
         .map_err(|error| error.to_string())?;
     if let Some(position) = position {
-        window
-            .set_position(Position::Logical(LogicalPosition::new(
-                f64::from(position.x),
-                f64::from(position.y),
-            )))
-            .map_err(|error| error.to_string())?;
+        window_manager::place_window(app, &window, Some(position))?;
     }
     Ok(())
 }
@@ -68,19 +59,23 @@ pub fn set_open_at_login(
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<Preferences, String> {
-    if enabled {
-        app.autolaunch()
-            .enable()
-            .map_err(|error| error.to_string())?;
+    let actual = if tauri::is_dev() {
+        enabled
     } else {
-        app.autolaunch()
-            .disable()
-            .map_err(|error| error.to_string())?;
-    }
-    let actual = app
-        .autolaunch()
-        .is_enabled()
-        .map_err(|error| error.to_string())?;
+        if enabled {
+            app.autolaunch()
+                .enable()
+                .map_err(|error| error.to_string())?;
+        } else {
+            app.autolaunch()
+                .disable()
+                .map_err(|error| error.to_string())?;
+        }
+        app
+            .autolaunch()
+            .is_enabled()
+            .map_err(|error| error.to_string())?
+    };
     let preferences = state.set_open_at_login(actual);
     save_preferences(&app, &preferences)?;
     emit_preferences(&app, &preferences)?;

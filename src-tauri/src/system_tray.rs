@@ -190,6 +190,7 @@ fn menu_snapshot(app: &AppHandle) -> TrayMenuSnapshot {
 fn build_menu(app: &AppHandle) -> tauri::Result<TrayMenuState> {
     let snapshot = menu_snapshot(app);
     let toggle = MenuItemBuilder::with_id("toggle-overlay", &snapshot.toggle_text).build(app)?;
+    let reset = MenuItemBuilder::with_id("reset-overlay-position", "重置悬浮窗位置").build(app)?;
     let manager = MenuItemBuilder::with_id("show-manager", "打开设备管理").build(app)?;
     let refresh = MenuItemBuilder::with_id("refresh", "刷新直连状态").build(app)?;
     let status = MenuItemBuilder::with_id("status", &snapshot.status_text)
@@ -222,6 +223,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<TrayMenuState> {
         app,
         &[
             &toggle,
+            &reset,
             &manager,
             &separator1,
             &refresh,
@@ -267,6 +269,9 @@ fn handle_menu(app: &AppHandle, id: &str) {
         "toggle-overlay" => {
             let _ = window_manager::toggle_overlay(app);
         }
+        "reset-overlay-position" => {
+            let _ = window_manager::reset_overlay_position(app);
+        }
         "show-manager" => {
             let _ = window_manager::show_manager(app);
         }
@@ -300,13 +305,18 @@ fn handle_menu(app: &AppHandle, id: &str) {
         }
         "toggle-autostart" => {
             let next = !app.state::<AppState>().preferences().open_at_login;
-            let result = if next {
-                app.autolaunch().enable()
+            let actual = if tauri::is_dev() {
+                Ok(next)
             } else {
-                app.autolaunch().disable()
+                let autolaunch = app.autolaunch();
+                let result = if next {
+                    autolaunch.enable()
+                } else {
+                    autolaunch.disable()
+                };
+                result.map(|_| autolaunch.is_enabled().unwrap_or(next))
             };
-            if result.is_ok() {
-                let actual = app.autolaunch().is_enabled().unwrap_or(next);
+            if let Ok(actual) = actual {
                 let preferences = app.state::<AppState>().set_open_at_login(actual);
                 let _ = save_preferences(app, &preferences);
                 let _ = emit_preferences(app, &preferences);

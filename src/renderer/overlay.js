@@ -142,7 +142,7 @@ function scheduleFitHeight() {
   fitHeightTimer = window.setTimeout(() => {
     fitHeightTimer = null;
 
-    if (document.body.dataset.variant === 'compact' || !panelEl || !panelShellEl) {
+    if (document.body.dataset.variant !== 'full' || !panelEl || !panelShellEl) {
       return;
     }
 

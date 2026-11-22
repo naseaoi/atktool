@@ -10,13 +10,20 @@ mod platform {
     use windows::{
         core::w,
         Win32::{
-            Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
-            System::LibraryLoader::GetModuleHandleW,
+            Devices::HumanInterfaceDevice::GUID_DEVINTERFACE_HID,
+            Foundation::{HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+            System::{
+                LibraryLoader::GetModuleHandleW,
+                Power::{RegisterSuspendResumeNotification, UnregisterSuspendResumeNotification},
+            },
             UI::WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
                 GetWindowLongPtrW, PostMessageW, PostQuitMessage, RegisterClassW,
-                SetWindowLongPtrW, CREATESTRUCTW, GWLP_USERDATA, HWND_MESSAGE, MSG,
-                WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW,
+                RegisterDeviceNotificationW, SetWindowLongPtrW, UnregisterDeviceNotification,
+                CREATESTRUCTW, DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE,
+                DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE,
+                DEV_BROADCAST_DEVICEINTERFACE_W, GWLP_USERDATA, HWND_MESSAGE, MSG, WINDOW_EX_STYLE,
+                WINDOW_STYLE, WM_CLOSE, WM_NCCREATE, WM_NCDESTROY, WNDCLASSW,
             },
         },
     };
@@ -44,8 +51,13 @@ mod platform {
         if reference != 0 {
             let app = unsafe { &*(reference as *const AppHandle) };
             match message {
-                WM_DEVICECHANGE => {
-                    let _ = app.state::<BatteryService>().refresh(true);
+                WM_DEVICECHANGE
+                    if matches!(
+                        wparam.0 as u32,
+                        DBT_DEVICEARRIVAL | DBT_DEVICEREMOVECOMPLETE
+                    ) =>
+                {
+                    let _ = app.state::<BatteryService>().topology_changed();
                 }
                 WM_POWERBROADCAST if wparam.0 == PBT_APMSUSPEND => {
                     let _ = app.state::<BatteryService>().set_suspended(true);
@@ -163,6 +175,23 @@ mod platform {
                 return;
             }
         };
+        // 消息专用窗口收不到广播，需要分别订阅 HID 和电源通知。
+        let recipient = HANDLE(window.0);
+        let filter = DEV_BROADCAST_DEVICEINTERFACE_W {
+            dbcc_size: size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>() as u32,
+            dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE.0,
+            dbcc_classguid: GUID_DEVINTERFACE_HID,
+            ..Default::default()
+        };
+        let device_notify = unsafe {
+            RegisterDeviceNotificationW(
+                recipient,
+                (&raw const filter).cast(),
+                DEVICE_NOTIFY_WINDOW_HANDLE,
+            )
+        };
+        let power_notify =
+            unsafe { RegisterSuspendResumeNotification(recipient, DEVICE_NOTIFY_WINDOW_HANDLE) };
         hwnd_slot.store(window.0 as isize, Ordering::Release);
         let _ = ready.send(Ok(()));
         let mut message = MSG::default();
@@ -170,6 +199,12 @@ mod platform {
             unsafe {
                 DispatchMessageW(&message);
             }
+        }
+        if let Ok(handle) = power_notify {
+            let _ = unsafe { UnregisterSuspendResumeNotification(handle) };
+        }
+        if let Ok(handle) = device_notify {
+            let _ = unsafe { UnregisterDeviceNotification(handle) };
         }
         hwnd_slot.store(0, Ordering::Release);
     }

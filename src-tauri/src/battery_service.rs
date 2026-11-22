@@ -1,7 +1,8 @@
 use std::{
+    collections::BTreeSet,
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use chrono::Utc;
@@ -11,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::{
     device::{candidates, list_devices, open_path, NativeDevice},
     models::{DeviceBinding, OverlayState},
-    protocol::{is_protocol_failure, read_battery, BatteryReading, ProtocolKind},
+    protocol::{is_protocol_failure, read_battery, BatteryReading, ProtocolKind, Transport},
     state::{save_preferences, AppState},
     system_tray,
 };
@@ -29,11 +30,97 @@ fn is_placeholder_device_name(name: &str) -> bool {
     compact.is_empty() || compact.eq_ignore_ascii_case("ATK设备")
 }
 
-fn device_list_changed(previous: &[String], current: &[String]) -> bool {
-    previous != current
+fn update_paths(previous: &mut BTreeSet<String>, current: impl Iterator<Item = String>) -> bool {
+    let current = current.collect();
+    let changed = *previous != current;
+    *previous = current;
+    changed
+}
+
+fn poll_interval(visible: bool, charging: bool, status: &str, percent: Option<u8>) -> Duration {
+    if charging || status == "full" {
+        Duration::from_secs(if visible { 5 } else { 15 })
+    } else if visible {
+        POLL_VISIBLE
+    } else if percent.is_some_and(|p| p <= 20) {
+        POLL_HIDDEN_LOW
+    } else if percent.is_some_and(|p| p <= 40) {
+        POLL_HIDDEN_MEDIUM
+    } else {
+        POLL_HIDDEN_DEFAULT
+    }
+}
+
+fn interval_label(interval: Duration) -> String {
+    let seconds = interval.as_secs();
+    if seconds >= 60 && seconds % 60 == 0 {
+        format!("{} 分钟", seconds / 60)
+    } else {
+        format!("{seconds} 秒")
+    }
+}
+
+const FOLLOW_UP_MS: [u64; 3] = [1000, 3000, 6000];
+type ChargeState = (bool, String);
+
+struct TopologyRound {
+    start: Instant,
+    deadline: Instant,
+    baseline: Option<ChargeState>,
+    first: bool,
+}
+
+#[derive(Default)]
+struct TopologySchedule(Option<TopologyRound>);
+
+impl TopologySchedule {
+    fn event(&mut self, now: Instant, baseline: Option<ChargeState>) {
+        let debounce = now + Duration::from_millis(250);
+        if let Some(round) = self.0.as_mut().filter(|r| r.first) {
+            round.deadline = debounce.min(round.start + Duration::from_secs(1));
+        } else {
+            self.0 = Some(TopologyRound {
+                start: now,
+                deadline: debounce,
+                baseline,
+                first: true,
+            });
+        }
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.0.as_ref().map(|round| round.deadline)
+    }
+
+    fn take_due(&mut self, now: Instant) -> Option<bool> {
+        let round = self.0.as_mut().filter(|r| now >= r.deadline)?;
+        let scan = round.first;
+        round.first = false;
+        if let Some(next) = FOLLOW_UP_MS
+            .iter()
+            .map(|ms| round.start + Duration::from_millis(*ms))
+            .find(|t| *t > now)
+        {
+            round.deadline = next;
+        } else {
+            self.0 = None;
+        }
+        Some(scan)
+    }
+
+    fn observed(&mut self, state: ChargeState) {
+        if self
+            .0
+            .as_ref()
+            .is_some_and(|r| r.baseline.as_ref().is_some_and(|before| *before != state))
+        {
+            self.0 = None;
+        }
+    }
 }
 
 enum ServiceCommand {
+    TopologyChanged(Instant),
     Refresh { scan_devices: bool },
     SetBinding(Option<DeviceBinding>),
     SetVisible(bool),
@@ -58,6 +145,12 @@ impl BatteryService {
     pub fn refresh(&self, scan_devices: bool) -> Result<(), String> {
         self.sender
             .send(ServiceCommand::Refresh { scan_devices })
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn topology_changed(&self) -> Result<(), String> {
+        self.sender
+            .send(ServiceCommand::TopologyChanged(Instant::now()))
             .map_err(|error| error.to_string())
     }
 
@@ -92,11 +185,12 @@ struct Runtime {
     binding: Option<DeviceBinding>,
     visible: bool,
     suspended: bool,
-    protocol: Option<ProtocolKind>,
+    protocol: Option<(ProtocolKind, Transport)>,
+    topology: TopologySchedule,
     failures: u32,
     last_stable: Option<OverlayState>,
-    last_paths: Vec<String>,
-    next_device_watch: std::time::Instant,
+    last_paths: BTreeSet<String>,
+    next_device_watch: Instant,
 }
 
 impl Runtime {
@@ -133,20 +227,6 @@ impl Runtime {
         }
     }
 
-    fn next_poll_interval(&self) -> Duration {
-        if self.visible {
-            return POLL_VISIBLE;
-        }
-        let overlay = self.app.state::<AppState>().overlay();
-        if overlay.charging || overlay.battery_percent.is_some_and(|percent| percent <= 20) {
-            POLL_HIDDEN_LOW
-        } else if overlay.battery_percent.is_some_and(|percent| percent <= 40) {
-            POLL_HIDDEN_MEDIUM
-        } else {
-            POLL_HIDDEN_DEFAULT
-        }
-    }
-
     fn retry_interval(&self) -> Duration {
         let maximum = if self.visible { 30 } else { 120 };
         let exponent = self.failures.saturating_sub(1).min(8);
@@ -173,9 +253,11 @@ impl Runtime {
         device: &NativeDevice,
         reading: BatteryReading,
         count: usize,
+        interval: Duration,
     ) -> OverlayState {
         self.remember_binding(device);
-        self.protocol = Some(reading.protocol);
+        self.topology
+            .observed((reading.charging, reading.charge_status.to_owned()));
         self.failures = 0;
         let preferences = self.app.state::<AppState>().preferences();
         let overlay = OverlayState {
@@ -183,10 +265,7 @@ impl Runtime {
             message: if self.visible {
                 "原生 HID 直连已建立。".to_owned()
             } else {
-                format!(
-                    "托盘后台采集中，当前为{}分钟级轮询。",
-                    self.next_poll_interval().as_secs() / 60
-                )
+                format!("托盘后台采集中，每 {} 轮询一次。", interval_label(interval))
             },
             battery_percent: Some(reading.battery_percent),
             battery_text: format!("{}%", reading.battery_percent),
@@ -223,7 +302,14 @@ impl Runtime {
             Ok(devices) => devices,
             Err(error) => return self.handle_error(error, false, 0),
         };
-        self.last_paths = devices.iter().map(NativeDevice::device_id).collect();
+        let changed = update_paths(
+            &mut self.last_paths,
+            devices.iter().map(NativeDevice::device_id),
+        );
+        self.refresh_devices(devices, scan_devices || changed)
+    }
+
+    fn refresh_devices(&mut self, devices: Vec<NativeDevice>, scan_devices: bool) -> Duration {
         let count = devices.len();
         let candidates = candidates(&devices, self.binding.as_ref());
         if candidates.is_empty() {
@@ -259,10 +345,17 @@ impl Runtime {
                 result => result,
             };
             match result {
-                Ok(reading) => {
-                    let overlay = self.connected(device, reading, count);
+                Ok((reading, transport)) => {
+                    self.protocol = Some((reading.protocol, transport));
+                    let interval = poll_interval(
+                        self.visible,
+                        reading.charging,
+                        reading.charge_status,
+                        Some(reading.battery_percent),
+                    );
+                    let overlay = self.connected(device, reading, count, interval);
                     self.emit(overlay);
-                    return self.next_poll_interval();
+                    return interval;
                 }
                 Err(error) => errors.push(error),
             }
@@ -329,22 +422,16 @@ impl Runtime {
         }
     }
 
-    fn devices_changed(&mut self) -> bool {
-        let now = std::time::Instant::now();
-        if now < self.next_device_watch {
-            return false;
+    fn watch_devices(&mut self) -> Option<Duration> {
+        if self.suspended || self.binding.is_none() {
+            return None;
         }
-        self.next_device_watch = now + DEVICE_WATCH_INTERVAL;
-        if self.binding.is_none() {
-            return false;
-        }
-        let Ok(devices) = list_devices(&mut self.api) else {
-            return false;
-        };
-        let paths: Vec<_> = devices.iter().map(NativeDevice::device_id).collect();
-        let changed = device_list_changed(&self.last_paths, &paths);
-        self.last_paths = paths;
-        changed
+        let devices = list_devices(&mut self.api).ok()?;
+        update_paths(
+            &mut self.last_paths,
+            devices.iter().map(NativeDevice::device_id),
+        )
+        .then(|| self.refresh_devices(devices, true))
     }
 }
 
@@ -373,61 +460,105 @@ fn worker_loop(
         visible,
         suspended: false,
         protocol: None,
+        topology: TopologySchedule::default(),
         failures: 0,
         last_stable: None,
-        last_paths: Vec::new(),
-        next_device_watch: std::time::Instant::now() + DEVICE_WATCH_INTERVAL,
+        last_paths: Default::default(),
+        next_device_watch: Instant::now() + DEVICE_WATCH_INTERVAL,
     };
-    let mut next_poll = std::time::Instant::now();
+    let mut next_poll = Instant::now();
+    let mut last_topology_read = None;
     loop {
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         let deadline = next_poll.min(runtime.next_device_watch);
+        let deadline = runtime
+            .topology
+            .deadline()
+            .map_or(deadline, |due| deadline.min(due));
         let timeout = deadline.saturating_duration_since(now);
         match receiver.recv_timeout(timeout) {
             Ok(ServiceCommand::Refresh { scan_devices }) => {
                 let interval = runtime.refresh(scan_devices);
-                next_poll = std::time::Instant::now() + interval;
+                next_poll = Instant::now() + interval;
+                runtime.next_device_watch = Instant::now() + DEVICE_WATCH_INTERVAL;
+                continue;
+            }
+            Ok(ServiceCommand::TopologyChanged(at)) => {
+                if !runtime.suspended
+                    && runtime.binding.is_some()
+                    && last_topology_read.is_none_or(|read| at > read)
+                {
+                    let baseline = runtime
+                        .last_stable
+                        .as_ref()
+                        .map(|o| (o.charging, o.charge_status.clone()));
+                    runtime.topology.event(at, baseline);
+                    // 即将进行的首扫同时覆盖轮询和设备监视，避免先阻塞在普通读取上。
+                    if let Some(scan) = runtime.topology.deadline() {
+                        next_poll = next_poll.max(scan);
+                        runtime.next_device_watch = runtime.next_device_watch.max(scan);
+                    }
+                }
             }
             Ok(ServiceCommand::SetBinding(binding)) => {
+                runtime.topology = TopologySchedule::default();
                 runtime.binding = binding;
                 runtime.protocol = None;
                 runtime.failures = 0;
                 runtime.last_stable = None;
-                next_poll = std::time::Instant::now();
+                next_poll = Instant::now();
             }
             Ok(ServiceCommand::SetVisible(visible)) => {
                 runtime.visible = visible;
                 next_poll = if visible {
-                    std::time::Instant::now()
+                    Instant::now()
                 } else {
-                    std::time::Instant::now() + runtime.next_poll_interval()
+                    let interval = runtime
+                        .last_stable
+                        .as_ref()
+                        .map_or(POLL_HIDDEN_DEFAULT, |o| {
+                            poll_interval(false, o.charging, &o.charge_status, o.battery_percent)
+                        });
+                    Instant::now() + interval
                 };
             }
             Ok(ServiceCommand::SetSuspended(suspended)) => {
                 runtime.suspended = suspended;
+                if suspended {
+                    runtime.topology = TopologySchedule::default();
+                }
                 next_poll = if suspended {
-                    std::time::Instant::now() + POLL_HIDDEN_DEFAULT
+                    Instant::now() + POLL_HIDDEN_DEFAULT
                 } else {
-                    std::time::Instant::now()
+                    Instant::now()
                 };
+                continue;
             }
             Ok(ServiceCommand::Stop) | Err(RecvTimeoutError::Disconnected) => break,
-            Err(RecvTimeoutError::Timeout) => {
-                let now = std::time::Instant::now();
-                let changed = now >= runtime.next_device_watch && runtime.devices_changed();
-                if changed || now >= next_poll {
-                    let interval = runtime.refresh(changed);
-                    next_poll = std::time::Instant::now() + interval;
-                }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        let now = Instant::now();
+        if let Some(scan) = runtime.topology.take_due(now) {
+            last_topology_read = Some(now);
+            let interval = runtime.refresh(scan);
+            next_poll = Instant::now() + interval;
+            runtime.next_device_watch = Instant::now() + DEVICE_WATCH_INTERVAL;
+        } else if now >= next_poll {
+            let interval = runtime.refresh(false);
+            next_poll = Instant::now() + interval;
+            runtime.next_device_watch = Instant::now() + DEVICE_WATCH_INTERVAL;
+        } else if now >= runtime.next_device_watch {
+            if let Some(interval) = runtime.watch_devices() {
+                next_poll = Instant::now() + interval;
             }
+            runtime.next_device_watch = Instant::now() + DEVICE_WATCH_INTERVAL;
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{device_list_changed, is_placeholder_device_name, DEVICE_RECONNECT_INTERVAL};
-    use std::time::Duration;
+    use super::*;
 
     #[test]
     fn recognizes_legacy_device_name_placeholders() {
@@ -438,12 +569,97 @@ mod tests {
     }
 
     #[test]
-    fn detects_first_device_after_empty_startup_scan() {
-        assert!(device_list_changed(&[], &["receiver".to_owned()]));
-        assert!(!device_list_changed(
-            &["receiver".to_owned()],
-            &["receiver".to_owned()]
+    fn detects_path_changes_independently_of_order() {
+        let mut paths = BTreeSet::new();
+        assert!(update_paths(
+            &mut paths,
+            ["receiver", "cable"].into_iter().map(str::to_owned)
         ));
+        assert!(!update_paths(
+            &mut paths,
+            ["cable", "receiver"].into_iter().map(str::to_owned)
+        ));
+        assert!(update_paths(
+            &mut paths,
+            ["receiver"].into_iter().map(str::to_owned)
+        ));
+    }
+
+    #[test]
+    fn event_storm_bounds_first_scan_and_coalesces_the_one_second_read() {
+        let start = Instant::now();
+        let mut plan = TopologySchedule::default();
+        for ms in (0..1000).step_by(100) {
+            let now = start + Duration::from_millis(ms);
+            plan.event(now, None);
+            assert_eq!(plan.take_due(now), None);
+        }
+        let now = start + Duration::from_secs(1);
+        assert_eq!(plan.take_due(now), Some(true));
+        assert_eq!(plan.take_due(now), None);
+        assert_eq!(plan.deadline(), Some(start + Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn charge_transition_cancels_follow_ups() {
+        let start = Instant::now();
+        let mut plan = TopologySchedule::default();
+        let full = (false, "full".to_owned());
+        plan.event(start, Some(full.clone()));
+        assert_eq!(
+            plan.take_due(start + Duration::from_millis(250)),
+            Some(true)
+        );
+        plan.observed(full);
+        assert_eq!(plan.take_due(start + Duration::from_secs(1)), Some(false));
+        plan.observed((false, "idle".to_owned()));
+        assert_eq!(plan.deadline(), None);
+    }
+
+    #[test]
+    fn event_during_follow_ups_starts_a_new_round() {
+        let start = Instant::now();
+        let mut plan = TopologySchedule::default();
+        plan.event(start, None);
+        plan.take_due(start + Duration::from_millis(250));
+        let restart = start + Duration::from_millis(800);
+        plan.event(restart, None);
+        assert_eq!(plan.take_due(start + Duration::from_secs(1)), None);
+        assert_eq!(
+            plan.take_due(restart + Duration::from_millis(250)),
+            Some(true)
+        );
+        for seconds in [1, 3, 6] {
+            assert_eq!(
+                plan.take_due(restart + Duration::from_secs(seconds)),
+                Some(false)
+            );
+        }
+        assert_eq!(plan.deadline(), None);
+    }
+
+    #[test]
+    fn labels_poll_intervals_in_natural_units() {
+        assert_eq!(interval_label(Duration::from_secs(15)), "15 秒");
+        assert_eq!(interval_label(POLL_HIDDEN_DEFAULT), "10 分钟");
+    }
+
+    #[test]
+    fn cable_polling_includes_full_without_charging_flag() {
+        for (charging, status) in [(true, "charging"), (false, "full")] {
+            assert_eq!(
+                poll_interval(true, charging, status, Some(100)),
+                Duration::from_secs(5)
+            );
+            assert_eq!(
+                poll_interval(false, charging, status, Some(100)),
+                Duration::from_secs(15)
+            );
+        }
+        assert_eq!(
+            poll_interval(false, false, "idle", Some(20)),
+            POLL_HIDDEN_LOW
+        );
     }
 
     #[test]

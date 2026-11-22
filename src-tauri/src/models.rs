@@ -14,13 +14,14 @@ pub struct DeviceBinding {
 pub struct WindowPosition {
     pub x: i32,
     pub y: i32,
+    pub scale_factor: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowBounds {
-    pub x: i32,
-    pub y: i32,
+    #[serde(flatten)]
+    pub position: WindowPosition,
     pub width: f64,
 }
 

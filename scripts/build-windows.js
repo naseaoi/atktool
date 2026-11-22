@@ -17,7 +17,7 @@ fs.mkdirSync(DIST_DIR, { recursive: true });
 const runner = path.join(ROOT_DIR, 'scripts', 'run-rust-tool.js');
 const arguments = mode === 'bundle'
   ? [runner, 'tauri', 'build']
-  : [runner, 'cargo', 'build', '--release', '--manifest-path', 'src-tauri/Cargo.toml'];
+  : [runner, 'tauri', 'build', '--no-bundle'];
 const buildStartedAt = Date.now();
 const result = spawnSync(process.execPath, arguments, { cwd: ROOT_DIR, stdio: 'inherit' });
 
